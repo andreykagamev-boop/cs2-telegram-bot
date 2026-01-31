@@ -1,2 +1,0 @@
-[phases.setup]
-nixPkgs = ["libxml2", "libxslt", "gcc", "zlib.dev"]
