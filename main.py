@@ -26,24 +26,24 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-# Константы игр - проверенные slug
+# Только нужные игры
 GAMES = {
     "cs2": {
         "name": "Counter-Strike 2",
-        "slug": "csgo",  # PandaScore использует csgo для CS2
+        "slug": "csgo",
         "emoji": "🔫",
-        "color": "#e74c3c"
+        "id": 1  # Предполагаемый ID CS:GO
     },
     "dota2": {
         "name": "Dota 2",
-        "slug": "dota-2",  # Правильный slug для Dota 2
+        "slug": "dota-2",
         "emoji": "⚔️",
-        "color": "#3498db"
+        "id": 4  # Предполагаемый ID Dota 2
     }
 }
 
 class PandaScoreAPI:
-    """Клиент для работы с PandaScore API"""
+    """Улучшенный клиент для PandaScore API"""
     
     def __init__(self, token: str):
         self.token = token
@@ -56,58 +56,93 @@ class PandaScoreAPI:
             self.session = aiohttp.ClientSession(headers=self.headers)
         return self.session
     
-    async def get_upcoming_matches(self, game_slug: str, limit: int = 5):
-        """Получить предстоящие матчи"""
+    async def make_request(self, url: str, params: Optional[Dict] = None):
+        """Универсальный метод запроса с логированием"""
         try:
             session = await self.get_session()
-            url = f"{self.base_url}/{game_slug}/matches/upcoming"
             
-            async with session.get(url, params={
-                "per_page": limit,
-                "sort": "scheduled_at",
-                "page": 1
-            }) as response:
+            # Логируем запрос
+            logger.info(f"Making request to: {url}")
+            if params:
+                logger.info(f"Params: {params}")
+            
+            async with session.get(url, params=params) as response:
+                response_text = await response.text()
                 
                 if response.status == 200:
-                    return await response.json()
-                elif response.status == 404:
-                    logger.warning(f"Game not found: {game_slug}")
-                    return []
+                    data = await response.json()
+                    logger.info(f"Success: {len(data) if isinstance(data, list) else 'object'} items")
+                    return data
                 else:
-                    logger.error(f"API Error {response.status}: {await response.text()}")
+                    logger.error(f"API Error {response.status}: {response_text[:200]}")
+                    
+                    # Пробуем другой endpoint если 404
+                    if response.status == 404:
+                        logger.warning(f"Endpoint not found: {url}")
+                    
                     return []
                     
         except Exception as e:
-            logger.error(f"Error getting matches: {e}")
+            logger.error(f"Request error: {e}")
             return []
     
-    async def get_running_matches(self, game_slug: str):
-        """Получить текущие матчи"""
-        try:
-            session = await self.get_session()
-            url = f"{self.base_url}/{game_slug}/matches/running"
-            
-            async with session.get(url, params={"per_page": 5}) as response:
-                if response.status == 200:
-                    return await response.json()
-                return []
-        except Exception as e:
-            logger.error(f"Error getting running matches: {e}")
-            return []
+    async def get_upcoming_matches_by_slug(self, game_slug: str, limit: int = 5):
+        """Получить матчи по slug игры"""
+        url = f"{self.base_url}/{game_slug}/matches/upcoming"
+        params = {
+            "per_page": limit,
+            "sort": "scheduled_at",
+            "page": 1
+        }
+        return await self.make_request(url, params)
     
-    async def get_videogames(self):
-        """Получить список всех доступных игр (для дебага)"""
-        try:
-            session = await self.get_session()
-            url = f"{self.base_url}/videogames"
-            
-            async with session.get(url) as response:
-                if response.status == 200:
-                    return await response.json()
-                return []
-        except Exception as e:
-            logger.error(f"Error getting games: {e}")
-            return []
+    async def get_upcoming_matches_by_id(self, game_id: int, limit: int = 5):
+        """Получить матчи по ID игры - альтернативный метод"""
+        url = f"{self.base_url}/matches/upcoming"
+        params = {
+            "filter[videogame_id]": game_id,
+            "per_page": limit,
+            "sort": "scheduled_at",
+            "page": 1
+        }
+        return await self.make_request(url, params)
+    
+    async def get_running_matches_by_slug(self, game_slug: str):
+        """Получить live матчи по slug"""
+        url = f"{self.base_url}/{game_slug}/matches/running"
+        params = {"per_page": 5}
+        return await self.make_request(url, params)
+    
+    async def get_running_matches_by_id(self, game_id: int):
+        """Получить live матчи по ID игры"""
+        url = f"{self.base_url}/matches/running"
+        params = {
+            "filter[videogame_id]": game_id,
+            "per_page": 5
+        }
+        return await self.make_request(url, params)
+    
+    async def get_today_matches(self, game_slug: str):
+        """Получить матчи на сегодня"""
+        url = f"{self.base_url}/{game_slug}/matches"
+        today = datetime.utcnow().date()
+        
+        params = {
+            "filter[begin_at]": today.isoformat(),
+            "per_page": 10,
+            "sort": "scheduled_at"
+        }
+        return await self.make_request(url, params)
+    
+    async def search_matches(self, game_name: str):
+        """Поиск матчей по названию игры"""
+        url = f"{self.base_url}/matches"
+        params = {
+            "search[name]": game_name,
+            "per_page": 5,
+            "sort": "scheduled_at"
+        }
+        return await self.make_request(url, params)
     
     async def close(self):
         if self.session and not self.session.closed:
@@ -117,7 +152,7 @@ class PandaScoreAPI:
 panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
 
 def create_main_keyboard():
-    """Создание главного меню"""
+    """Главное меню"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🎯 CS2 Матчи", callback_data="matches_cs2"),
@@ -125,23 +160,19 @@ def create_main_keyboard():
         ],
         [
             InlineKeyboardButton(text="🔥 Live Матчи", callback_data="live_matches")
-        ],
-        [
-            InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh")
         ]
     ])
     return keyboard
 
 def create_match_keyboard(match: Dict, game: str):
-    """Создание клавиатуры для матча"""
+    """Клавиатура для матча"""
     buttons = []
     
-    # Добавляем ссылку на трансляцию если есть
-    stream_url = match.get("official_stream_url") or match.get("live_url")
+    # Ссылка на трансляцию
+    stream_url = match.get("official_stream_url") or match.get("live_url") or match.get("stream_url")
     if stream_url:
         buttons.append([InlineKeyboardButton(text="📺 Смотреть трансляцию", url=stream_url)])
     
-    # Основные кнопки
     buttons.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data=f"matches_{game}"),
         InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")
@@ -150,16 +181,16 @@ def create_match_keyboard(match: Dict, game: str):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def create_live_keyboard(match: Dict):
-    """Создание клавиатуры для live матча"""
+    """Клавиатура для live матча"""
     buttons = []
     
-    # Обязательно добавляем ссылку на трансляцию для live
-    stream_url = match.get("official_stream_url") or match.get("live_url")
+    # Обязательно ссылка для live
+    stream_url = match.get("official_stream_url") or match.get("live_url") or match.get("stream_url")
     if stream_url:
         buttons.append([InlineKeyboardButton(text="🔥 Смотреть LIVE", url=stream_url)])
     else:
-        # Если нет ссылки, пытаемся найти в других полях
-        for key in ["stream_url", "video_url", "url"]:
+        # Пробуем другие поля
+        for key in ["video_url", "url", "twitch_url", "youtube_url"]:
             if match.get(key):
                 buttons.append([InlineKeyboardButton(text="🔥 Смотреть LIVE", url=match.get(key))])
                 break
@@ -172,32 +203,31 @@ def create_live_keyboard(match: Dict):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def format_time(scheduled_at: str) -> str:
-    """Форматирование времени в MSK"""
+    """Форматирование времени"""
     try:
         dt_utc = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
-        dt_msk = dt_utc + timedelta(hours=3)  # Конвертируем в MSK
+        dt_msk = dt_utc + timedelta(hours=3)
         
-        today = datetime.utcnow() + timedelta(hours=3)
+        now_msk = datetime.utcnow() + timedelta(hours=3)
         
-        # Определяем день
-        if dt_msk.date() == today.date():
-            day_str = "Сегодня"
-        elif dt_msk.date() == today.date() + timedelta(days=1):
-            day_str = "Завтра"
+        # Если сегодня
+        if dt_msk.date() == now_msk.date():
+            return f"Сегодня в {dt_msk.strftime('%H:%M')} MSK"
+        # Если завтра
+        elif dt_msk.date() == now_msk.date() + timedelta(days=1):
+            return f"Завтра в {dt_msk.strftime('%H:%M')} MSK"
+        # Если в течение недели
+        elif dt_msk.date() <= now_msk.date() + timedelta(days=7):
+            days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            return f"{days[dt_msk.weekday()]} {dt_msk.strftime('%d.%m')} в {dt_msk.strftime('%H:%M')} MSK"
         else:
-            weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-            day_str = f"{dt_msk.strftime('%d.%m')} ({weekdays[dt_msk.weekday()]})"
-        
-        time_str = dt_msk.strftime("%H:%M")
-        return f"{day_str} в {time_str} MSK"
-        
-    except Exception as e:
-        logger.error(f"Time formatting error: {e}")
+            return f"{dt_msk.strftime('%d.%m.%Y')} в {dt_msk.strftime('%H:%M')} MSK"
+    except:
         return "Скоро"
 
 def format_match(match: Dict, game_info: Dict, is_live: bool = False) -> str:
-    """Форматирование информации о матче"""
-    # Основная информация
+    """Форматирование матча"""
+    # Основные данные
     league = match.get("league", {}).get("name", "Турнир")
     tournament = match.get("serie", {}).get("full_name", "")
     
@@ -208,14 +238,10 @@ def format_match(match: Dict, game_info: Dict, is_live: bool = False) -> str:
     
     # Время
     scheduled_at = match.get("scheduled_at", "")
-    time_display = format_time(scheduled_at) if scheduled_at else "Скоро"
+    time_str = format_time(scheduled_at) if scheduled_at else "Скоро"
     
     # Статус
-    if is_live:
-        status = "🟢 <b>LIVE СЕЙЧАС</b>"
-        time_display = "🔥 <b>ПРЯМОЙ ЭФИР</b>"
-    else:
-        status = "🕐 <b>Будет скоро</b>"
+    status = "🔥 <b>LIVE СЕЙЧАС</b>" if is_live else f"🕐 {time_str}"
     
     # Формируем сообщение
     message = f"""
@@ -228,31 +254,29 @@ def format_match(match: Dict, game_info: Dict, is_live: bool = False) -> str:
    vs
 ⚔️ <b>{team2}</b>
 
-🕐 {time_display}
 {status}
 """
     
     return message.strip()
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+# ========== КОМАНДЫ ==========
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Команда /start"""
-    welcome_text = """
+    """Старт"""
+    welcome = """
 <b>🎮 Каппер Бармен</b>
 
-Привет! Я помогу тебе следить за киберспортивными матчами.
+Следим за лучшими киберспортивными матчами:
 
-📊 <b>Доступные игры:</b>
-• Counter-Strike 2 (CS2)
-• Dota 2
+🎯 Counter-Strike 2
+⚔️ Dota 2
 
-👇 <b>Выбери что интересует:</b>
+👇 Выбери что интересует:
 """
     
     await message.answer(
-        welcome_text,
+        welcome,
         reply_markup=create_main_keyboard(),
         disable_web_page_preview=True
     )
@@ -260,162 +284,145 @@ async def cmd_start(message: types.Message):
 @dp.message(Command("cs2"))
 async def cmd_cs2(message: types.Message):
     """CS2 матчи"""
-    await show_matches(message, "cs2")
+    await show_cs2_matches(message)
 
 @dp.message(Command("dota2"))
 async def cmd_dota2(message: types.Message):
     """Dota 2 матчи"""
-    await show_matches(message, "dota2")
+    await show_dota2_matches(message)
 
 @dp.message(Command("live"))
 async def cmd_live(message: types.Message):
     """Live матчи"""
     await show_live_matches_standalone(message)
 
-@dp.message(Command("debug"))
-async def cmd_debug(message: types.Message):
-    """Дебаг команда - проверка доступных игр"""
-    await message.answer("🔄 Проверяю доступные игры...")
+@dp.message(Command("test"))
+async def cmd_test(message: types.Message):
+    """Тестовая команда для Dota 2"""
+    await message.answer("🔍 Тестирую Dota 2 API...")
     
-    games = await panda_api.get_videogames()
+    # Пробуем разные методы
+    test_results = []
     
-    if not games:
-        await message.answer("❌ Не удалось получить список игр. Проверь токен.")
-        return
+    # 1. По slug
+    matches_slug = await panda_api.get_upcoming_matches_by_slug("dota-2", limit=3)
+    test_results.append(f"📌 По slug 'dota-2': {len(matches_slug)} матчей")
     
-    # Ищем CS2 и Dota 2
-    cs2_found = False
-    dota_found = False
-    available_games = []
+    # 2. По ID (предполагаемый ID 4)
+    matches_id = await panda_api.get_upcoming_matches_by_id(4, limit=3)
+    test_results.append(f"📌 По ID 4: {len(matches_id)} матчей")
     
-    for game in games:
-        slug = game.get("slug", "")
-        name = game.get("name", "")
-        
-        if "csgo" in slug or "counter-strike" in name.lower():
-            cs2_found = True
-            available_games.append(f"✅ CS2: {name} (slug: {slug})")
-        
-        if "dota" in slug.lower() or "dota" in name.lower():
-            dota_found = True
-            available_games.append(f"✅ Dota 2: {name} (slug: {slug})")
-        
-        # Добавляем другие игры для информации
-        if len(available_games) < 10:  # Ограничиваем список
-            available_games.append(f"📌 {name} (slug: {slug})")
+    # 3. Матчи на сегодня
+    matches_today = await panda_api.get_today_matches("dota-2")
+    test_results.append(f"📌 На сегодня: {len(matches_today)} матчей")
     
-    debug_message = "<b>🔧 Результат проверки:</b>\n\n"
+    # 4. Поиск
+    matches_search = await panda_api.search_matches("Dota")
+    test_results.append(f"📌 Поиск 'Dota': {len(matches_search)} матчей")
     
-    if cs2_found:
-        debug_message += "🎯 CS2: <b>ДОСТУПНО</b>\n"
-    else:
-        debug_message += "🎯 CS2: <b>НЕ ДОСТУПНО</b>\n"
+    # 5. Live матчи
+    live_matches = await panda_api.get_running_matches_by_slug("dota-2")
+    test_results.append(f"📌 Live матчи: {len(live_matches)} матчей")
     
-    if dota_found:
-        debug_message += "⚔️ Dota 2: <b>ДОСТУПНО</b>\n"
-    else:
-        debug_message += "⚔️ Dota 2: <b>НЕ ДОСТУПНО</b>\n"
+    result_message = "<b>🔧 Результаты теста Dota 2:</b>\n\n"
+    result_message += "\n".join(test_results)
     
-    debug_message += f"\n📊 Всего игр в API: {len(games)}\n\n"
-    debug_message += "<b>Доступные игры:</b>\n"
-    debug_message += "\n".join(available_games[:8])  # Показываем первые 8
+    # Показываем первый матч если есть
+    all_matches = []
+    if matches_slug:
+        all_matches.extend(matches_slug)
+    if matches_id:
+        all_matches.extend(matches_id)
     
-    await message.answer(debug_message, disable_web_page_preview=True)
+    if all_matches:
+        result_message += f"\n\n<b>Пример матча:</b>"
+        match = all_matches[0]
+        result_message += f"\nID: {match.get('id')}"
+        result_message += f"\nНазвание: {match.get('name', 'N/A')}"
+        result_message += f"\nВремя: {match.get('scheduled_at', 'N/A')}"
+        result_message += f"\nЛига: {match.get('league', {}).get('name', 'N/A')}"
+    
+    await message.answer(result_message, disable_web_page_preview=True)
 
 @dp.callback_query(F.data == "main_menu")
 async def handle_main_menu(callback: types.CallbackQuery):
-    """Возврат в главное меню"""
-    welcome_text = """
+    """Главное меню"""
+    welcome = """
 <b>🎮 Каппер Бармен</b>
 
-👇 <b>Выбери что интересует:</b>
+👇 Выбери что интересует:
 """
     
     await callback.message.edit_text(
-        welcome_text,
-        reply_markup=create_main_keyboard(),
-        disable_web_page_preview=True
+        welcome,
+        reply_markup=create_main_keyboard()
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "refresh")
-async def handle_refresh(callback: types.CallbackQuery):
-    """Обновление главного меню"""
-    await handle_main_menu(callback)
-    await callback.answer("✅ Обновлено")
-
 @dp.callback_query(F.data == "matches_cs2")
 async def handle_cs2_matches(callback: types.CallbackQuery):
-    """CS2 матчи через callback"""
-    await callback.answer("🎯 Загружаю CS2 матчи...")
-    await show_matches_callback(callback, "cs2")
+    """CS2 матчи"""
+    await callback.answer("🎯 Загружаю CS2...")
+    await show_cs2_matches(callback)
 
 @dp.callback_query(F.data == "matches_dota2")
 async def handle_dota2_matches(callback: types.CallbackQuery):
-    """Dota 2 матчи через callback"""
-    await callback.answer("⚔️ Загружаю Dota 2 матчи...")
-    await show_matches_callback(callback, "dota2")
+    """Dota 2 матчи"""
+    await callback.answer("⚔️ Загружаю Dota 2...")
+    await show_dota2_matches(callback)
 
 @dp.callback_query(F.data == "live_matches")
 async def handle_live_matches(callback: types.CallbackQuery):
-    """Live матчи через callback"""
-    await callback.answer("🔥 Ищу live матчи...")
+    """Live матчи"""
+    await callback.answer("🔥 Ищу live...")
     await show_live_matches_callback(callback)
 
-# ========== ФУНКЦИИ ПОКАЗА МАТЧЕЙ ==========
+# ========== ФУНКЦИИ ДЛЯ КАЖДОЙ ИГРЫ ==========
 
-async def show_matches(message_or_callback, game: str):
-    """Показать матчи для игры"""
+async def show_cs2_matches(message_or_callback):
+    """Показать CS2 матчи"""
     is_callback = isinstance(message_or_callback, types.CallbackQuery)
     chat_id = message_or_callback.message.chat.id if is_callback else message_or_callback.chat.id
     
-    if game not in GAMES:
-        error_msg = "❌ Игра не найдена"
-        if is_callback:
-            await message_or_callback.message.edit_text(error_msg)
-        else:
-            await message_or_callback.answer(error_msg)
-        return
+    game_info = GAMES["cs2"]
     
-    game_info = GAMES[game]
-    
-    # Показываем загрузку
-    loading_text = f"🔄 Загружаю матчи {game_info['emoji']} {game_info['name']}..."
-    
+    # Загрузка
     if is_callback:
-        await message_or_callback.message.edit_text(loading_text)
+        await message_or_callback.message.edit_text(f"🎯 Ищу матчи {game_info['name']}...")
     else:
-        msg = await message_or_callback.answer(loading_text)
+        msg = await message_or_callback.answer(f"🎯 Ищу матчи {game_info['name']}...")
     
-    # Получаем матчи
-    matches = await panda_api.get_upcoming_matches(game_info["slug"], limit=5)
+    # Пробуем разные методы для CS2
+    matches = []
+    
+    # 1. Основной метод по slug
+    matches = await panda_api.get_upcoming_matches_by_slug(game_info["slug"], limit=5)
+    
+    # 2. Если не нашли, пробуем по ID
+    if not matches:
+        matches = await panda_api.get_upcoming_matches_by_id(game_info["id"], limit=5)
     
     if not matches:
-        no_matches_text = f"📭 Нет предстоящих матчей по {game_info['name']}"
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data=f"matches_{game}")],
-            [InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")]
-        ])
+        no_matches = f"📭 Нет предстоящих матчей {game_info['name']}"
         
         if is_callback:
-            await message_or_callback.message.edit_text(no_matches_text, reply_markup=keyboard)
+            await message_or_callback.message.edit_text(no_matches)
         else:
-            await msg.edit_text(no_matches_text, reply_markup=keyboard)
+            await msg.edit_text(no_matches)
         return
     
-    # Показываем заголовок
-    header = f"<b>{game_info['emoji']} {game_info['name']} - Ближайшие матчи</b>\n"
+    # Заголовок
+    header = f"<b>{game_info['emoji']} {game_info['name']}</b>\n"
     
     if is_callback:
         await message_or_callback.message.edit_text(header)
     else:
         await msg.edit_text(header)
     
-    # Показываем каждый матч
-    for i, match in enumerate(matches[:5]):
+    # Матчи
+    for match in matches[:5]:
         match_text = format_match(match, game_info)
-        keyboard = create_match_keyboard(match, game)
+        keyboard = create_match_keyboard(match, "cs2")
         
         await bot.send_message(
             chat_id=chat_id,
@@ -423,60 +430,178 @@ async def show_matches(message_or_callback, game: str):
             reply_markup=keyboard,
             disable_web_page_preview=True
         )
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.2)
+
+async def show_dota2_matches(message_or_callback):
+    """Показать Dota 2 матчи"""
+    is_callback = isinstance(message_or_callback, types.CallbackQuery)
+    chat_id = message_or_callback.message.chat.id if is_callback else message_or_callback.chat.id
+    
+    game_info = GAMES["dota2"]
+    
+    # Загрузка
+    if is_callback:
+        await message_or_callback.message.edit_text(f"⚔️ Ищу матчи {game_info['name']}...")
+    else:
+        msg = await message_or_callback.answer(f"⚔️ Ищу матчи {game_info['name']}...")
+    
+    # Пробуем ВСЕ методы для Dota 2
+    all_matches = []
+    
+    logger.info(f"🔍 Поиск матчей Dota 2...")
+    
+    # 1. По slug dota-2
+    logger.info("Пробую slug: dota-2")
+    matches1 = await panda_api.get_upcoming_matches_by_slug("dota-2", limit=5)
+    logger.info(f"Найдено по slug: {len(matches1)}")
+    all_matches.extend(matches1)
+    
+    # 2. По slug dota2 (без дефиса)
+    logger.info("Пробую slug: dota2")
+    matches2 = await panda_api.get_upcoming_matches_by_slug("dota2", limit=5)
+    logger.info(f"Найдено по slug dota2: {len(matches2)}")
+    all_matches.extend(matches2)
+    
+    # 3. По ID 4
+    logger.info("Пробую ID: 4")
+    matches3 = await panda_api.get_upcoming_matches_by_id(4, limit=5)
+    logger.info(f"Найдено по ID 4: {len(matches3)}")
+    all_matches.extend(matches3)
+    
+    # 4. По ID 14 (другой возможный ID)
+    logger.info("Пробую ID: 14")
+    matches4 = await panda_api.get_upcoming_matches_by_id(14, limit=5)
+    logger.info(f"Найдено по ID 14: {len(matches4)}")
+    all_matches.extend(matches4)
+    
+    # 5. Матчи на сегодня
+    logger.info("Пробую матчи на сегодня")
+    matches5 = await panda_api.get_today_matches("dota-2")
+    logger.info(f"Найдено на сегодня: {len(matches5)}")
+    all_matches.extend(matches5)
+    
+    # 6. Поиск
+    logger.info("Пробую поиск")
+    matches6 = await panda_api.search_matches("Dota")
+    logger.info(f"Найдено поиском: {len(matches6)}")
+    all_matches.extend(matches6)
+    
+    # Убираем дубликаты по ID
+    unique_matches = []
+    seen_ids = set()
+    
+    for match in all_matches:
+        if match and match.get("id") and match["id"] not in seen_ids:
+            seen_ids.add(match["id"])
+            unique_matches.append(match)
+    
+    logger.info(f"Всего уникальных матчей Dota 2: {len(unique_matches)}")
+    
+    if not unique_matches:
+        no_matches = f"📭 К сожалению, матчей {game_info['name']} не найдено\n\n"
+        no_matches += "Возможно, нет запланированных турниров в ближайшее время."
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data="matches_dota2")],
+            [InlineKeyboardButton(text="🎯 CS2 Матчи", callback_data="matches_cs2")],
+            [InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")]
+        ])
+        
+        if is_callback:
+            await message_or_callback.message.edit_text(no_matches, reply_markup=keyboard)
+        else:
+            await msg.edit_text(no_matches, reply_markup=keyboard)
+        return
+    
+    # Сортируем по времени
+    unique_matches.sort(key=lambda x: x.get("scheduled_at", ""))
+    
+    # Заголовок
+    header = f"<b>{game_info['emoji']} {game_info['name']}</b>\n"
+    header += f"Найдено матчей: {len(unique_matches)}\n"
     
     if is_callback:
-        await callback.answer(f"✅ Загружено {len(matches)} матчей")
-
-async def show_matches_callback(callback: types.CallbackQuery, game: str):
-    """Показать матчи через callback"""
-    await show_matches(callback, game)
+        await message_or_callback.message.edit_text(header)
+    else:
+        await msg.edit_text(header)
+    
+    # Показываем матчи
+    for match in unique_matches[:5]:
+        match_text = format_match(match, game_info)
+        keyboard = create_match_keyboard(match, "dota2")
+        
+        await bot.send_message(
+            chat_id=chat_id,
+            text=match_text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True
+        )
+        await asyncio.sleep(0.2)
 
 async def show_live_matches_callback(callback: types.CallbackQuery):
-    """Показать live матчи через callback"""
+    """Live матчи через callback"""
     await show_live_matches(callback, is_callback=True)
 
 async def show_live_matches_standalone(message: types.Message):
-    """Показать live матчи через команду"""
+    """Live матчи через команду"""
     await show_live_matches(message, is_callback=False)
 
 async def show_live_matches(message_or_callback, is_callback: bool = False):
     """Показать live матчи"""
     chat_id = message_or_callback.message.chat.id if is_callback else message_or_callback.chat.id
     
-    # Показываем загрузку
-    loading_text = "🔍 Ищу live матчи..."
-    
     if is_callback:
-        await message_or_callback.message.edit_text(loading_text)
+        await message_or_callback.message.edit_text("🔥 Ищу live матчи...")
     else:
-        msg = await message_or_callback.answer(loading_text)
+        msg = await message_or_callback.answer("🔥 Ищу live матчи...")
     
-    # Ищем live матчи для всех игр
-    all_live_matches = []
+    # Ищем live для обеих игр
+    all_live = []
     
-    for game_key, game_info in GAMES.items():
-        matches = await panda_api.get_running_matches(game_info["slug"])
-        for match in matches:
-            match["game_info"] = game_info
-            all_live_matches.append(match)
+    # CS2 live
+    cs2_live = await panda_api.get_running_matches_by_slug("csgo")
+    for match in cs2_live:
+        match["game_info"] = GAMES["cs2"]
+        all_live.append(match)
     
-    if not all_live_matches:
-        no_live_text = "📭 Сейчас нет live матчей"
+    # Dota 2 live - пробуем разные методы
+    dota_methods = [
+        ("dota-2", "slug dota-2"),
+        ("dota2", "slug dota2"),
+        (4, "ID 4"),
+        (14, "ID 14")
+    ]
+    
+    for method, desc in dota_methods:
+        if isinstance(method, str):
+            matches = await panda_api.get_running_matches_by_slug(method)
+        else:
+            matches = await panda_api.get_running_matches_by_id(method)
+        
+        if matches:
+            logger.info(f"Найдено live Dota 2 через {desc}: {len(matches)}")
+            for match in matches:
+                match["game_info"] = GAMES["dota2"]
+                all_live.append(match)
+            break
+    
+    if not all_live:
+        no_live = "📭 Сейчас нет live матчей"
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Проверить снова", callback_data="live_matches")],
+            [InlineKeyboardButton(text="🎯 CS2 Матчи", callback_data="matches_cs2")],
+            [InlineKeyboardButton(text="⚔️ Dota 2 Матчи", callback_data="matches_dota2")],
             [InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")]
         ])
         
         if is_callback:
-            await message_or_callback.message.edit_text(no_live_text, reply_markup=keyboard)
+            await message_or_callback.message.edit_text(no_live, reply_markup=keyboard)
         else:
-            await msg.edit_text(no_live_text, reply_markup=keyboard)
+            await msg.edit_text(no_live, reply_markup=keyboard)
         return
     
-    # Показываем заголовок
-    header = f"<b>🔥 LIVE МАТЧИ ПРЯМО СЕЙЧАС</b>\n"
+    # Заголовок
+    header = "<b>🔥 LIVE МАТЧИ СЕЙЧАС</b>\n"
     
     if is_callback:
         await message_or_callback.message.edit_text(header)
@@ -484,7 +609,7 @@ async def show_live_matches(message_or_callback, is_callback: bool = False):
         await msg.edit_text(header)
     
     # Показываем live матчи
-    for match in all_live_matches[:5]:
+    for match in all_live[:5]:
         game_info = match.pop("game_info")
         match_text = format_match(match, game_info, is_live=True)
         keyboard = create_live_keyboard(match)
@@ -495,51 +620,17 @@ async def show_live_matches(message_or_callback, is_callback: bool = False):
             reply_markup=keyboard,
             disable_web_page_preview=True
         )
-        await asyncio.sleep(0.3)
-    
-    if is_callback:
-        await callback.answer(f"🔥 Найдено {len(all_live_matches)} live матчей")
+        await asyncio.sleep(0.2)
 
-# ========== ЗАПУСК БОТА ==========
+# ========== ЗАПУСК ==========
 
 async def main():
-    """Основная функция запуска"""
+    """Запуск бота"""
     logger.info("🚀 Запускаю Каппер Бармен...")
     
-    # Проверяем доступные игры при запуске
-    logger.info("🔍 Проверяю доступные игры...")
-    games = await panda_api.get_videogames()
-    
-    if games:
-        logger.info(f"📊 Найдено игр: {len(games)}")
-        
-        # Ищем CS2 и Dota 2
-        cs2_slugs = []
-        dota_slugs = []
-        
-        for game in games:
-            slug = game.get("slug", "").lower()
-            name = game.get("name", "").lower()
-            
-            if "csgo" in slug or "counter-strike" in name:
-                cs2_slugs.append(f"{game.get('name')} (slug: {game.get('slug')})")
-            
-            if "dota" in slug or "dota" in name:
-                dota_slugs.append(f"{game.get('name')} (slug: {game.get('slug')})")
-        
-        if cs2_slugs:
-            logger.info(f"✅ CS2 доступен: {cs2_slugs[0]}")
-        else:
-            logger.warning("❌ CS2 не найден в доступных играх")
-        
-        if dota_slugs:
-            logger.info(f"✅ Dota 2 доступен: {dota_slugs[0]}")
-        else:
-            logger.warning("❌ Dota 2 не найден в доступных играх")
-            
-            # Показываем какие игры есть
-            other_games = [g.get('slug') for g in games[:5]]
-            logger.info(f"📌 Доступные игры: {', '.join(other_games)}")
+    if not PANDASCORE_TOKEN or not TELEGRAM_BOT_TOKEN:
+        logger.error("❌ Не установлены токены!")
+        return
     
     try:
         await dp.start_polling(bot, skip_updates=True)
@@ -547,14 +638,4 @@ async def main():
         await panda_api.close()
 
 if __name__ == "__main__":
-    # Проверка токенов
-    if not PANDASCORE_TOKEN:
-        logger.error("❌ PANDASCORE_TOKEN не установлен!")
-        exit(1)
-    
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
-        exit(1)
-    
-    # Запуск
     asyncio.run(main())
