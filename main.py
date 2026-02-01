@@ -7,7 +7,7 @@ from typing import Optional, Dict, List, Tuple
 from enum import Enum
 
 import aiohttp
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
@@ -34,6 +34,9 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 CACHE_TTL = 300  # 5 минут
 MAX_MATCHES_PER_PAGE = 10
 TIMEZONE_OFFSET = 3  # MSK (UTC+3)
+
+# Инициализация роутера
+router = Router()
 
 class MatchStatus(Enum):
     NOT_STARTED = "not_started"
@@ -124,9 +127,12 @@ class PandaScoreAPI:
                     for match in matches:
                         scheduled_at = match.get("scheduled_at")
                         if scheduled_at:
-                            match_dt = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
-                            if match_dt.date() == target_date:
-                                filtered_matches.append(match)
+                            try:
+                                match_dt = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
+                                if match_dt.date() == target_date:
+                                    filtered_matches.append(match)
+                            except:
+                                continue
                     
                     # Кэшируем результат
                     await self.set_cached(cache_key, filtered_matches)
@@ -170,9 +176,9 @@ class PandaScoreAPI:
             logger.error(f"Ошибка при получении live матчей: {e}")
             return []
     
-    async def get_match_details(self, match_id: int) -> Optional[Dict]:
-        """Получить детальную информацию о матче"""
-        cache_key = f"match_{match_id}"
+    async def get_upcoming_matches(self, limit: int = 10) -> List[Dict]:
+        """Получить ближайшие матчи"""
+        cache_key = f"upcoming_matches_{limit}"
         
         cached = await self.get_cached(cache_key)
         if cached:
@@ -180,37 +186,23 @@ class PandaScoreAPI:
         
         try:
             session = await self.get_session()
-            url = f"{self.base_url}/matches/{match_id}"
-            
-            async with session.get(url) as response:
-                if response.status == 200:
-                    match_data = await response.json()
-                    await self.set_cached(cache_key, match_data, ttl=600)
-                    return match_data
-                else:
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Ошибка при получении деталей матча: {e}")
-            return None
-    
-    async def get_upcoming_matches(self, limit: int = 10) -> List[Dict]:
-        """Получить ближайшие матчи"""
-        try:
-            session = await self.get_session()
             now = datetime.now(timezone.utc)
+            future = now + timedelta(days=7)  # Матчи на ближайшие 7 дней
             
             url = f"{self.base_url}/matches"
             params = {
-                "range[scheduled_at]": f"{now.isoformat()},{now.isoformat()}",
+                "range[scheduled_at]": f"{now.isoformat()},{future.isoformat()}",
                 "per_page": limit,
                 "sort": "scheduled_at",
-                "filter[status]": "not_started"
+                "filter[status]": "not_started",
+                "filter[videogame_version]": "2"
             }
             
             async with session.get(url, params=params) as response:
                 if response.status == 200:
-                    return await response.json()
+                    matches = await response.json()
+                    await self.set_cached(cache_key, matches, ttl=300)
+                    return matches
                 else:
                     return []
                     
@@ -225,13 +217,8 @@ class PandaScoreAPI:
         if self.redis_client:
             await self.redis_client.close()
 
-# Инициализация API и бота
+# Инициализация API
 panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
-bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
-
-# Состояния пользователей
-user_states = {}
 
 def format_match_time(scheduled_at: str) -> Tuple[str, str]:
     """Форматирование времени в MSK"""
@@ -252,27 +239,22 @@ def get_match_status(match: Dict) -> MatchStatus:
 
 def get_match_score(match: Dict) -> Tuple[int, int]:
     """Получить счет матча"""
-    opponents = match.get("opponents", [])
+    results = match.get("results", [])
+    if len(results) >= 2:
+        return results[0].get("score", 0), results[1].get("score", 0)
     
+    # Альтернативный способ
+    opponents = match.get("opponents", [])
     if len(opponents) >= 2:
-        results = match.get("results", [])
-        if len(results) >= 2:
-            return results[0].get("score", 0), results[1].get("score", 0)
-        
-        # Альтернативный способ получения счета
-        team1 = opponents[0].get("opponent", {})
-        team2 = opponents[1].get("opponent", {})
-        
-        team1_score = team1.get("score", 0)
-        team2_score = team2.get("score", 0)
-        
+        team1_score = opponents[0].get("opponent", {}).get("score", 0)
+        team2_score = opponents[1].get("opponent", {}).get("score", 0)
         return team1_score, team2_score
     
     return 0, 0
 
 TEAM_EMOJIS = {
-    "navi": "🟡", "natus": "🟡", "natus vincere": "🟡",
-    "vitality": "🐝", "vita": "🐝", "team vitality": "🐝",
+    "navi": "🟡", "natus": "🟡",
+    "vitality": "🐝", "vita": "🐝",
     "faze": "⚡", "faze clan": "⚡",
     "g2": "👑", "g2 esports": "👑",
     "spirit": "🐉", "team spirit": "🐉",
@@ -302,14 +284,24 @@ def get_team_emoji(team_name: str) -> str:
         if team_key in team_lower:
             return emoji
     
-    # Проверка по первым словам
-    words = team_lower.split()
-    if words:
-        for team_key, emoji in TEAM_EMOJIS.items():
-            if words[0] in team_key or team_key in words[0]:
-                return emoji
-    
     return "🎮"
+
+def get_team_name(team_data: Dict) -> str:
+    """Получить имя команды"""
+    if not team_data:
+        return "TBA"
+    
+    # Пробуем получить acronym
+    acronym = team_data.get("acronym")
+    if acronym and acronym != "null":
+        return acronym
+    
+    # Или полное имя
+    name = team_data.get("name", "TBA")
+    if name == "null":
+        return "TBA"
+    
+    return name
 
 def format_match_info(match: Dict, show_date: bool = False) -> str:
     """Форматирование информации о матче"""
@@ -318,11 +310,11 @@ def format_match_info(match: Dict, show_date: bool = False) -> str:
     if len(opponents) < 2:
         return "Команды не определены"
     
-    team1 = opponents[0].get("opponent", {})
-    team2 = opponents[1].get("opponent", {})
+    team1_data = opponents[0].get("opponent", {})
+    team2_data = opponents[1].get("opponent", {})
     
-    team1_name = team1.get("acronym") or team1.get("name", "TBA")
-    team2_name = team2.get("acronym") or team2.get("name", "TBA")
+    team1_name = get_team_name(team1_data)
+    team2_name = get_team_name(team2_data)
     
     team1_emoji = get_team_emoji(team1_name)
     team2_emoji = get_team_emoji(team2_name)
@@ -333,68 +325,69 @@ def format_match_info(match: Dict, show_date: bool = False) -> str:
     
     league = match.get("league", {}).get("name", "")
     tournament = match.get("tournament", {}).get("name", "")
-    
-    # Определяем лучшее название события
-    event_name = tournament or league
+    event_name = tournament or league or "Матч"
     
     if status == MatchStatus.RUNNING:
         score1, score2 = get_match_score(match)
-        return (f"🔴 <b>{team1_emoji} {team1_name} {score1}:{score2} {team2_name} {team2_emoji}</b>\n"
+        return (f"🔴 {team1_emoji} <b>{team1_name}</b> {score1}:{score2} <b>{team2_name}</b> {team2_emoji}\n"
                 f"   ⏱️ LIVE | 🏆 {event_name}")
     
     elif status == MatchStatus.FINISHED:
         winner_id = match.get("winner_id")
         score1, score2 = get_match_score(match)
         
-        if winner_id == team1.get("id"):
-            result = f"✅ <b>{team1_name}</b> побеждает"
-        elif winner_id == team2.get("id"):
-            result = f"✅ <b>{team2_name}</b> побеждает"
+        if winner_id == team1_data.get("id"):
+            winner_text = f"✅ <b>{team1_name}</b> побеждает"
+        elif winner_id == team2_data.get("id"):
+            winner_text = f"✅ <b>{team2_name}</b> побеждает"
         else:
-            result = "Матч завершен"
+            winner_text = "Матч завершен"
         
-        return (f"{result} ({score1}:{score2})\n"
-                f"🏆 {event_name}")
+        return f"{winner_text} ({score1}:{score2})\n🏆 {event_name}"
     
-    else:  # NOT_STARTED
-        date_info = f" | 📅 {date_str}" if show_date else ""
-        return (f"{team1_emoji} <b>{team1_name}</b>  vs  {team2_emoji} <b>{team2_name}</b>\n"
-                f"   ⏰ {time_str}{date_info} | 🏆 {event_name}")
+    else:  # NOT_STARTED, CANCELLED или другие
+        date_info = f" | 📅 {date_str}" if show_date and date_str else ""
+        status_emoji = "⏰" if status == MatchStatus.NOT_STARTED else "❌"
+        return (f"{team1_emoji} <b>{team1_name}</b> vs {team2_emoji} <b>{team2_name}</b>\n"
+                f"   {status_emoji} {time_str}{date_info} | 🏆 {event_name}")
 
 def create_pagination_keyboard(page: int, total_pages: int, callback_prefix: str) -> InlineKeyboardMarkup:
     """Создание клавиатуры с пагинацией"""
     buttons = []
     
+    # Кнопка "Назад" если не первая страница
     if page > 1:
         buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{callback_prefix}_{page-1}"))
     
-    buttons.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="page_info"))
+    # Информация о странице
+    buttons.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
     
+    # Кнопка "Вперед" если не последняя страница
     if page < total_pages:
         buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"{callback_prefix}_{page+1}"))
     
-    return InlineKeyboardMarkup(inline_keyboard=[
+    # Основные кнопки
+    keyboard = [
         buttons,
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh")],
         [InlineKeyboardButton(text="🔙 В главное меню", callback_data="main_menu")]
-    ])
+    ]
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def create_main_keyboard():
+def create_main_keyboard() -> InlineKeyboardMarkup:
     """Главное меню"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📅 МАТЧИ СЕГОДНЯ", callback_data="today_1"),
-            InlineKeyboardButton(text="📅 МАТЧИ ЗАВТРА", callback_data="tomorrow_1")
+            InlineKeyboardButton(text="📅 СЕГОДНЯ", callback_data="today_1"),
+            InlineKeyboardButton(text="📅 ЗАВТРА", callback_data="tomorrow_1")
         ],
         [
-            InlineKeyboardButton(text="🔥 LIVE МАТЧИ", callback_data="live_1"),
+            InlineKeyboardButton(text="🔥 LIVE", callback_data="live_1"),
             InlineKeyboardButton(text="⏳ БЛИЖАЙШИЕ", callback_data="upcoming_1")
         ],
         [
             InlineKeyboardButton(text="🔄 ОБНОВИТЬ", callback_data="refresh"),
-            InlineKeyboardButton(text="📊 СТАТИСТИКА", callback_data="stats")
-        ],
-        [
-            InlineKeyboardButton(text="⚙️ НАСТРОЙКИ", callback_data="settings"),
             InlineKeyboardButton(text="ℹ️ ПОМОЩЬ", callback_data="help")
         ]
     ])
@@ -420,23 +413,42 @@ async def send_match_list(chat_id: int, matches: List[Dict], title: str, page: i
     message_text = f"<b>{title}</b>\n\n"
     
     for i, match in enumerate(matches[start_idx:end_idx], start=start_idx + 1):
-        match_info = format_match_info(match, show_date="завтра" in title.lower())
+        match_info = format_match_info(match, show_date=("завтра" in title.lower() or "ближай" in title.lower()))
         message_text += f"{i}. {match_info}\n\n"
     
-    message_text += f"\n📊 Показано {start_idx + 1}-{end_idx} из {len(matches)} матчей"
-    message_text += f"\n⏱️ Время указано в MSK (UTC+{TIMEZONE_OFFSET})"
+    message_text += f"📊 Показано {start_idx + 1}-{end_idx} из {len(matches)} матчей\n"
+    message_text += f"⏱️ Время указано в MSK (UTC+{TIMEZONE_OFFSET})"
     
     if total_pages > 1:
-        keyboard = create_pagination_keyboard(page, total_pages, title.split()[0].lower())
+        # Определяем префикс для callback_data
+        if "сегодня" in title.lower():
+            prefix = "today"
+        elif "завтра" in title.lower():
+            prefix = "tomorrow"
+        elif "live" in title.lower():
+            prefix = "live"
+        else:
+            prefix = "upcoming"
+        
+        keyboard = create_pagination_keyboard(page, total_pages, prefix)
     else:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh")],
             [InlineKeyboardButton(text="🔙 В главное меню", callback_data="main_menu")]
         ])
     
-    await bot.send_message(chat_id, message_text, reply_markup=keyboard)
+    try:
+        await bot.send_message(chat_id, message_text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения: {e}")
+
+# Инициализация бота ДО использования
+bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher()
+dp.include_router(router)
 
 # Обработчики команд
-@dp.message(Command("start"))
+@router.message(Command("start"))
 async def cmd_start(message: types.Message):
     """Команда /start"""
     welcome_text = (
@@ -451,7 +463,7 @@ async def cmd_start(message: types.Message):
     
     await message.answer(welcome_text, reply_markup=create_main_keyboard())
 
-@dp.message(Command("help"))
+@router.message(Command("help"))
 async def cmd_help(message: types.Message):
     """Команда /help"""
     help_text = (
@@ -480,7 +492,7 @@ async def cmd_help(message: types.Message):
     await message.answer(help_text, reply_markup=create_main_keyboard())
 
 # Обработчики callback-запросов
-@dp.callback_query(F.data.startswith("today_"))
+@router.callback_query(F.data.startswith("today_"))
 async def handle_today_matches(callback: CallbackQuery):
     """Матчи на сегодня"""
     try:
@@ -499,7 +511,7 @@ async def handle_today_matches(callback: CallbackQuery):
         logger.error(f"Error in today matches: {e}")
         await callback.answer("Ошибка при получении данных")
 
-@dp.callback_query(F.data.startswith("tomorrow_"))
+@router.callback_query(F.data.startswith("tomorrow_"))
 async def handle_tomorrow_matches(callback: CallbackQuery):
     """Матчи на завтра"""
     try:
@@ -518,7 +530,7 @@ async def handle_tomorrow_matches(callback: CallbackQuery):
         logger.error(f"Error in tomorrow matches: {e}")
         await callback.answer("Ошибка при получении данных")
 
-@dp.callback_query(F.data.startswith("live_"))
+@router.callback_query(F.data.startswith("live_"))
 async def handle_live_matches(callback: CallbackQuery):
     """Live матчи"""
     try:
@@ -547,13 +559,85 @@ async def handle_live_matches(callback: CallbackQuery):
         logger.error(f"Error in live matches: {e}")
         await callback.answer("Ошибка при получении данных")
 
-@dp.callback_query(F.data == "refresh")
+@router.callback_query(F.data.startswith("upcoming_"))
+async def handle_upcoming_matches(callback: CallbackQuery):
+    """Ближайшие матчи"""
+    try:
+        page = int(callback.data.split("_")[1])
+        matches = await panda_api.get_upcoming_matches(limit=50)
+        
+        await send_match_list(
+            callback.message.chat.id,
+            matches,
+            "⏳ БЛИЖАЙШИЕ МАТЧИ CS2",
+            page
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Error in upcoming matches: {e}")
+        await callback.answer("Ошибка при получении данных")
+
+@router.callback_query(F.data == "refresh")
 async def handle_refresh(callback: CallbackQuery):
     """Обновление данных"""
-    await callback.answer("🔄 Данные обновляются...")
-    await handle_today_matches(callback)
+    await callback.answer("🔄 Обновление...")
+    
+    # Определяем, что обновлять по тексту сообщения
+    message_text = callback.message.text or ""
+    
+    if "СЕГОДНЯ" in message_text:
+        await handle_today_matches(
+            CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="today_1"
+            )
+        )
+    elif "ЗАВТРА" in message_text:
+        await handle_tomorrow_matches(
+            CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="tomorrow_1"
+            )
+        )
+    elif "LIVE" in message_text:
+        await handle_live_matches(
+            CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="live_1"
+            )
+        )
+    elif "БЛИЖАЙШИЕ" in message_text:
+        await handle_upcoming_matches(
+            CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="upcoming_1"
+            )
+        )
+    else:
+        # По умолчанию показываем сегодняшние матчи
+        await handle_today_matches(
+            CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="today_1"
+            )
+        )
 
-@dp.callback_query(F.data == "main_menu")
+@router.callback_query(F.data == "main_menu")
 async def handle_main_menu(callback: CallbackQuery):
     """Возврат в главное меню"""
     try:
@@ -570,8 +654,19 @@ async def handle_main_menu(callback: CallbackQuery):
         )
     await callback.answer()
 
+@router.callback_query(F.data == "help")
+async def handle_help(callback: CallbackQuery):
+    """Помощь"""
+    await cmd_help(callback.message)
+    await callback.answer()
+
+@router.callback_query(F.data == "noop")
+async def handle_noop(callback: CallbackQuery):
+    """Пустой обработчик для кнопок-заглушек"""
+    await callback.answer()
+
 # Дополнительные команды
-@dp.message(Command("today"))
+@router.message(Command("today"))
 async def cmd_today(message: types.Message):
     """Команда /today"""
     await handle_today_matches(
@@ -584,7 +679,7 @@ async def cmd_today(message: types.Message):
         )
     )
 
-@dp.message(Command("tomorrow"))
+@router.message(Command("tomorrow"))
 async def cmd_tomorrow(message: types.Message):
     """Команда /tomorrow"""
     await handle_tomorrow_matches(
@@ -597,7 +692,7 @@ async def cmd_tomorrow(message: types.Message):
         )
     )
 
-@dp.message(Command("live"))
+@router.message(Command("live"))
 async def cmd_live(message: types.Message):
     """Команда /live"""
     await handle_live_matches(
@@ -610,34 +705,20 @@ async def cmd_live(message: types.Message):
         )
     )
 
-@dp.message(Command("upcoming"))
+@router.message(Command("upcoming"))
 async def cmd_upcoming(message: types.Message):
     """Команда /upcoming - ближайшие матчи"""
-    try:
-        matches = await panda_api.get_upcoming_matches(limit=15)
-        
-        if not matches:
-            await message.answer(
-                "⏳ <b>БЛИЖАЙШИЕ МАТЧИ</b>\n\n"
-                "На данный момент ближайших матчей не найдено.",
-                reply_markup=create_main_keyboard()
-            )
-            return
-        
-        message_text = "⏳ <b>БЛИЖАЙШИЕ МАТЧИ CS2</b>\n\n"
-        
-        for i, match in enumerate(matches[:10], 1):
-            match_info = format_match_info(match, show_date=True)
-            message_text += f"{i}. {match_info}\n\n"
-        
-        message_text += f"⏱️ Все время указано в MSK (UTC+{TIMEZONE_OFFSET})"
-        
-        await message.answer(message_text, reply_markup=create_main_keyboard())
-    except Exception as e:
-        logger.error(f"Error in upcoming matches: {e}")
-        await message.answer("Ошибка при получении данных")
+    await handle_upcoming_matches(
+        CallbackQuery(
+            id="cmd",
+            from_user=message.from_user,
+            chat_instance="cmd",
+            message=message,
+            data="upcoming_1"
+        )
+    )
 
-@dp.message(Command("refresh"))
+@router.message(Command("refresh"))
 async def cmd_refresh(message: types.Message):
     """Команда /refresh"""
     await message.answer("🔄 Обновление данных...")
