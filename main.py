@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # Конфигурация
 PANDASCORE_TOKEN = os.getenv("PANDASCORE_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-REDIS_URL = os.getenv("REDIS_URL")  # Не обязателен
 
 # Константы
 CACHE_TTL = 300  # 5 минут
@@ -44,7 +43,7 @@ class MatchStatus(Enum):
     CANCELLED = "cancelled"
 
 class PandaScoreAPI:
-    """API клиент для CS2 с кэшированием в памяти"""
+    """API клиент для CS:GO (который включает CS2 матчи)"""
     
     def __init__(self, token: str):
         self.token = token
@@ -67,10 +66,8 @@ class PandaScoreAPI:
         """Получить данные из кэша в памяти"""
         try:
             if key in self.cache:
-                # Проверяем, не устарели ли данные
                 timestamp = self.cache_timestamps.get(key, 0)
                 if (datetime.now().timestamp() - timestamp) < CACHE_TTL:
-                    logger.info(f"Кэш {key} загружен из памяти")
                     return self.cache[key]
         except Exception as e:
             logger.error(f"Ошибка получения из кэша: {e}")
@@ -96,30 +93,11 @@ class PandaScoreAPI:
             self.cache.pop(key, None)
             self.cache_timestamps.pop(key, None)
     
-    async def get_matches_by_date(self, target_date: datetime.date) -> List[Dict]:
-        """Получить матчи на конкретную дату"""
-        cache_key = f"matches_{target_date.isoformat()}"
-        
-        # Проверяем кэш
-        cached = await self.get_cached(cache_key)
-        if cached:
-            return cached
-        
+    async def get_csgo_matches(self, params: Dict) -> List[Dict]:
+        """Общий метод для получения матчей CS:GO"""
         try:
             session = await self.get_session()
-            
-            # Форматируем даты в UTC
-            start_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-            end_dt = start_dt + timedelta(days=1)
-            
-            # Используем правильный эндпоинт для CS2
-            url = f"{self.base_url}/cs2/matches"
-            params = {
-                "range[scheduled_at]": f"{start_dt.isoformat()},{end_dt.isoformat()}",
-                "per_page": 100,
-                "sort": "scheduled_at",
-                "filter[status]": "not_started,running"
-            }
+            url = f"{self.base_url}/csgo/matches"
             
             logger.info(f"Запрос к API: {url} с параметрами {params}")
             
@@ -129,36 +107,69 @@ class PandaScoreAPI:
                 if response.status == 200:
                     matches = await response.json()
                     logger.info(f"Получено матчей: {len(matches)}")
-                    
-                    # Фильтруем по точной дате
-                    filtered_matches = []
-                    for match in matches:
-                        scheduled_at = match.get("scheduled_at")
-                        if scheduled_at:
-                            try:
-                                # Парсим время (может быть в разных форматах)
-                                if 'Z' in scheduled_at:
-                                    match_dt = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
-                                else:
-                                    match_dt = datetime.fromisoformat(scheduled_at)
-                                
-                                if match_dt.date() == target_date:
-                                    filtered_matches.append(match)
-                            except Exception as e:
-                                logger.error(f"Ошибка парсинга времени {scheduled_at}: {e}")
-                                continue
-                    
-                    # Кэшируем результат
-                    await self.set_cached(cache_key, filtered_matches)
-                    return filtered_matches
+                    return matches
                 else:
                     error_text = await response.text()
                     logger.error(f"API error {response.status}: {error_text}")
                     return []
-                    
         except Exception as e:
             logger.error(f"Ошибка при получении матчей: {e}")
             return []
+    
+    async def get_matches_by_date(self, target_date: datetime.date) -> List[Dict]:
+        """Получить матчи на конкретную дату"""
+        cache_key = f"matches_{target_date.isoformat()}"
+        
+        # Проверяем кэш
+        cached = await self.get_cached(cache_key)
+        if cached:
+            return cached
+        
+        # Форматируем даты в UTC
+        start_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_dt = start_dt + timedelta(days=1)
+        
+        params = {
+            "range[scheduled_at]": f"{start_dt.isoformat()},{end_dt.isoformat()}",
+            "per_page": 50,
+            "sort": "scheduled_at",
+            "filter[status]": "not_started,running"
+        }
+        
+        matches = await self.get_csgo_matches(params)
+        
+        if matches:
+            # Фильтруем по точной дате и CS2
+            filtered_matches = []
+            for match in matches:
+                scheduled_at = match.get("scheduled_at")
+                videogame_version = match.get("videogame_version", {}).get("name", "")
+                
+                if scheduled_at:
+                    try:
+                        # Парсим время
+                        if 'Z' in scheduled_at:
+                            match_dt = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
+                        else:
+                            match_dt = datetime.fromisoformat(scheduled_at)
+                        
+                        # Фильтруем по дате и версии игры (CS2)
+                        if match_dt.date() == target_date:
+                            # Проверяем, что это CS2 матч
+                            if videogame_version.lower() == "cs2" or "2" in videogame_version:
+                                filtered_matches.append(match)
+                            else:
+                                # Если версия не указана, включаем матч
+                                filtered_matches.append(match)
+                    except Exception as e:
+                        logger.error(f"Ошибка парсинга времени {scheduled_at}: {e}")
+                        continue
+            
+            # Кэшируем результат
+            await self.set_cached(cache_key, filtered_matches)
+            return filtered_matches
+        
+        return []
     
     async def get_live_matches(self, force_refresh: bool = False) -> List[Dict]:
         """Получить live матчи"""
@@ -171,23 +182,27 @@ class PandaScoreAPI:
         
         try:
             session = await self.get_session()
-            url = f"{self.base_url}/cs2/matches/running"
+            url = f"{self.base_url}/csgo/matches/running"
             
             params = {
                 "per_page": 20,
                 "sort": "-begin_at"
             }
             
-            logger.info(f"Запрос live матчей: {url}")
-            
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     matches = await response.json()
-                    await self.set_cached(cache_key, matches)
-                    return matches
+                    
+                    # Фильтруем CS2 матчи
+                    cs2_matches = []
+                    for match in matches:
+                        videogame_version = match.get("videogame_version", {}).get("name", "")
+                        if videogame_version.lower() == "cs2" or "2" in videogame_version:
+                            cs2_matches.append(match)
+                    
+                    await self.set_cached(cache_key, cs2_matches)
+                    return cs2_matches
                 else:
-                    error_text = await response.text()
-                    logger.error(f"API error {response.status}: {error_text}")
                     return []
                     
         except Exception as e:
@@ -202,32 +217,30 @@ class PandaScoreAPI:
         if cached:
             return cached
         
-        try:
-            session = await self.get_session()
-            now = datetime.now(timezone.utc)
-            future = now + timedelta(days=3)  # Матчи на ближайшие 3 дня
+        now = datetime.now(timezone.utc)
+        future = now + timedelta(days=7)  # Матчи на ближайшие 7 дней
+        
+        params = {
+            "range[scheduled_at]": f"{now.isoformat()},{future.isoformat()}",
+            "per_page": limit,
+            "sort": "scheduled_at",
+            "filter[status]": "not_started"
+        }
+        
+        matches = await self.get_csgo_matches(params)
+        
+        if matches:
+            # Фильтруем CS2 матчи
+            cs2_matches = []
+            for match in matches:
+                videogame_version = match.get("videogame_version", {}).get("name", "")
+                if videogame_version.lower() == "cs2" or "2" in videogame_version:
+                    cs2_matches.append(match)
             
-            url = f"{self.base_url}/cs2/matches"
-            params = {
-                "range[scheduled_at]": f"{now.isoformat()},{future.isoformat()}",
-                "per_page": limit,
-                "sort": "scheduled_at",
-                "filter[status]": "not_started"
-            }
-            
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    matches = await response.json()
-                    await self.set_cached(cache_key, matches)
-                    return matches
-                else:
-                    error_text = await response.text()
-                    logger.error(f"API error {response.status}: {error_text}")
-                    return []
-                    
-        except Exception as e:
-            logger.error(f"Ошибка при получении ближайших матчей: {e}")
-            return []
+            await self.set_cached(cache_key, cs2_matches)
+            return cs2_matches
+        
+        return []
     
     async def close(self):
         """Закрытие соединений"""
@@ -240,16 +253,17 @@ panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
 def format_match_time(scheduled_at: str) -> Tuple[str, str]:
     """Форматирование времени в MSK"""
     try:
-        if 'Z' in scheduled_at:
-            dt_utc = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
-        else:
-            dt_utc = datetime.fromisoformat(scheduled_at).replace(tzinfo=timezone.utc)
-        
-        dt_msk = dt_utc + timedelta(hours=TIMEZONE_OFFSET)
-        return dt_msk.strftime("%H:%M"), dt_msk.strftime("%d.%m.%Y")
+        if scheduled_at:
+            if 'Z' in scheduled_at:
+                dt_utc = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+            else:
+                dt_utc = datetime.fromisoformat(scheduled_at).replace(tzinfo=timezone.utc)
+            
+            dt_msk = dt_utc + timedelta(hours=TIMEZONE_OFFSET)
+            return dt_msk.strftime("%H:%M"), dt_msk.strftime("%d.%m.%Y")
     except Exception as e:
         logger.error(f"Ошибка форматирования времени {scheduled_at}: {e}")
-        return "Скоро", ""
+    return "Скоро", ""
 
 def get_match_status(match: Dict) -> MatchStatus:
     """Получить статус матча"""
@@ -266,7 +280,6 @@ def get_match_score(match: Dict) -> Tuple[int, int]:
         if len(results) >= 2:
             return results[0].get("score", 0), results[1].get("score", 0)
         
-        # Альтернативный способ
         opponents = match.get("opponents", [])
         if len(opponents) >= 2:
             team1 = opponents[0].get("opponent", {})
@@ -301,7 +314,10 @@ TEAM_EMOJIS = {
     "pain": "😖",
     "saw": "🔪",
     "forze": "💪",
-    "eternal": "♾️"
+    "eternal": "♾️",
+    "betboom": "💣",
+    "monte": "🎲",
+    "apeks": "🦍"
 }
 
 def get_team_emoji(team_name: str) -> str:
@@ -315,12 +331,6 @@ def get_team_emoji(team_name: str) -> str:
         if team_key in team_lower:
             return emoji
     
-    # Проверяем первые 3 символа для акронимов
-    if len(team_lower) <= 5:
-        for team_key, emoji in TEAM_EMOJIS.items():
-            if team_key.startswith(team_lower[:3]) or team_lower[:3] in team_key:
-                return emoji
-    
     return "🎮"
 
 def get_team_name(team_data: Dict) -> str:
@@ -328,12 +338,10 @@ def get_team_name(team_data: Dict) -> str:
     if not team_data:
         return "TBA"
     
-    # Пробуем получить acronym
     acronym = team_data.get("acronym")
     if acronym and acronym.lower() not in ["", "null", "none"]:
         return acronym
     
-    # Или полное имя
     name = team_data.get("name", "TBA")
     if not name or name.lower() in ["", "null", "none"]:
         return "TBA"
@@ -342,12 +350,12 @@ def get_team_name(team_data: Dict) -> str:
 
 def format_match_info(match: Dict, show_date: bool = False) -> str:
     """Форматирование информации о матче"""
-    opponents = match.get("opponents", [])
-    
-    if len(opponents) < 2:
-        return "Команды не определены"
-    
     try:
+        opponents = match.get("opponents", [])
+        
+        if len(opponents) < 2:
+            return "Команды не определены"
+        
         team1_data = opponents[0].get("opponent", {})
         team2_data = opponents[1].get("opponent", {})
         
@@ -363,11 +371,15 @@ def format_match_info(match: Dict, show_date: bool = False) -> str:
         
         league = match.get("league", {}).get("name", "")
         tournament = match.get("tournament", {}).get("name", "")
-        event_name = tournament or league or "Матч"
+        event_name = tournament or league or "CS2 Матч"
+        
+        # Проверяем версию игры
+        game_version = match.get("videogame_version", {}).get("name", "")
+        game_info = " (CS2)" if "cs2" in game_version.lower() or "2" in game_version else ""
         
         if status == MatchStatus.RUNNING:
             score1, score2 = get_match_score(match)
-            return (f"🔴 {team1_emoji} <b>{team1_name}</b> {score1}:{score2} <b>{team2_name}</b> {team2_emoji}\n"
+            return (f"🔴 {team1_emoji} <b>{team1_name}</b> {score1}:{score2} <b>{team2_name}</b> {team2_emoji}{game_info}\n"
                     f"   ⏱️ LIVE | 🏆 {event_name}")
         
         elif status == MatchStatus.FINISHED:
@@ -381,12 +393,12 @@ def format_match_info(match: Dict, show_date: bool = False) -> str:
             else:
                 winner_text = "Матч завершен"
             
-            return f"{winner_text} ({score1}:{score2})\n🏆 {event_name}"
+            return f"{winner_text} ({score1}:{score2}){game_info}\n🏆 {event_name}"
         
         else:  # NOT_STARTED, CANCELLED или другие
             date_info = f" | 📅 {date_str}" if show_date and date_str else ""
             status_emoji = "⏰" if status == MatchStatus.NOT_STARTED else "❌"
-            return (f"{team1_emoji} <b>{team1_name}</b> vs {team2_emoji} <b>{team2_name}</b>\n"
+            return (f"{team1_emoji} <b>{team1_name}</b> vs {team2_emoji} <b>{team2_name}</b>{game_info}\n"
                     f"   {status_emoji} {time_str}{date_info} | 🏆 {event_name}")
     except Exception as e:
         logger.error(f"Ошибка форматирования матча: {e}")
@@ -396,18 +408,14 @@ def create_pagination_keyboard(page: int, total_pages: int, callback_prefix: str
     """Создание клавиатуры с пагинацией"""
     buttons = []
     
-    # Кнопка "Назад" если не первая страница
     if page > 1:
         buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{callback_prefix}_{page-1}"))
     
-    # Информация о странице
     buttons.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
     
-    # Кнопка "Вперед" если не последняя страница
     if page < total_pages:
         buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"{callback_prefix}_{page+1}"))
     
-    # Основные кнопки
     keyboard = [
         buttons,
         [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"refresh_{callback_prefix}_{page}")],
@@ -466,7 +474,6 @@ async def send_match_list(chat_id: int, matches: List[Dict], title: str, page: i
     message_text += f"⏱️ Время указано в MSK (UTC+{TIMEZONE_OFFSET})"
     
     if total_pages > 1:
-        # Определяем префикс для callback_data
         if "сегодня" in title.lower():
             prefix = "today"
         elif "завтра" in title.lower():
@@ -478,7 +485,6 @@ async def send_match_list(chat_id: int, matches: List[Dict], title: str, page: i
         
         keyboard = create_pagination_keyboard(page, total_pages, prefix)
     else:
-        # Определяем префикс для кнопки обновления
         if "сегодня" in title.lower():
             prefix = "today"
         elif "завтра" in title.lower():
@@ -498,7 +504,7 @@ async def send_match_list(chat_id: int, matches: List[Dict], title: str, page: i
     except Exception as e:
         logger.error(f"Ошибка отправки сообщения: {e}")
 
-# Инициализация бота ДО использования
+# Инициализация бота
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 dp.include_router(router)
@@ -590,12 +596,6 @@ async def handle_tomorrow_matches(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in tomorrow matches: {e}")
         await callback.answer("Ошибка при получении данных")
-        await bot.send_message(
-            callback.message.chat.id,
-            "⚠️ <b>Ошибка при получении данных</b>\n\n"
-            "Попробуйте обновить через некоторое время.",
-            reply_markup=create_main_keyboard()
-        )
 
 @router.callback_query(F.data.startswith("live_"))
 async def handle_live_matches(callback: CallbackQuery):
@@ -609,7 +609,7 @@ async def handle_live_matches(callback: CallbackQuery):
             await bot.send_message(
                 callback.message.chat.id,
                 "📡 <b>LIVE МАТЧИ</b>\n\n"
-                "В данный момент live матчей нет.\n"
+                "В данный момент live матчей CS2 нет.\n"
                 "Проверьте расписание предстоящих матчей!",
                 reply_markup=create_main_keyboard()
             )
@@ -624,12 +624,6 @@ async def handle_live_matches(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in live matches: {e}")
         await callback.answer("Ошибка при получении данных")
-        await bot.send_message(
-            callback.message.chat.id,
-            "⚠️ <b>Ошибка при получении live матчей</b>\n\n"
-            "Попробуйте обновить через некоторое время.",
-            reply_markup=create_main_keyboard()
-        )
 
 @router.callback_query(F.data.startswith("upcoming_"))
 async def handle_upcoming_matches(callback: CallbackQuery):
@@ -648,12 +642,6 @@ async def handle_upcoming_matches(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error in upcoming matches: {e}")
         await callback.answer("Ошибка при получении данных")
-        await bot.send_message(
-            callback.message.chat.id,
-            "⚠️ <b>Ошибка при получении данных</b>\n\n"
-            "Попробуйте обновить через некоторое время.",
-            reply_markup=create_main_keyboard()
-        )
 
 @router.callback_query(F.data.startswith("refresh_"))
 async def handle_refresh(callback: CallbackQuery):
@@ -712,7 +700,7 @@ async def handle_refresh(callback: CallbackQuery):
 
 @router.callback_query(F.data == "refresh_main")
 async def handle_refresh_main(callback: CallbackQuery):
-    """Обновление главного меню - показываем сегодняшние матчи"""
+    """Обновление главного меню"""
     await callback.answer("🔄 Обновление...")
     await handle_today_matches(
         CallbackQuery(
@@ -749,7 +737,7 @@ async def handle_help(callback: CallbackQuery):
 
 @router.callback_query(F.data == "noop")
 async def handle_noop(callback: CallbackQuery):
-    """Пустой обработчик для кнопок-заглушек"""
+    """Пустой обработчик"""
     await callback.answer()
 
 # Дополнительные команды
@@ -794,7 +782,7 @@ async def cmd_live(message: types.Message):
 
 @router.message(Command("upcoming"))
 async def cmd_upcoming(message: types.Message):
-    """Команда /upcoming - ближайшие матчи"""
+    """Команда /upcoming"""
     await handle_upcoming_matches(
         CallbackQuery(
             id="cmd",
