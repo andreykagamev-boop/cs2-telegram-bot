@@ -36,7 +36,7 @@ try:
     if DEEPSEEK_AVAILABLE:
         deepseek_client = AsyncOpenAI(
             api_key=DEEPSEEK_API_KEY,
-            base_url="https://api.deepseek.com"
+            base_url="https://api.deepseek.com/v1"
         )
         logger.info("✅ DeepSeek нейросеть активирована")
     else:
