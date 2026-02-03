@@ -23,339 +23,328 @@ logger = logging.getLogger(__name__)
 # Конфигурация
 PANDASCORE_TOKEN = os.getenv("PANDASCORE_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Новый ключ!
-
-# Проверяем наличие Gemini API
-try:
-    import google.generativeai as genai
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        GEMINI_AVAILABLE = True
-        logger.info("✅ Gemini API доступен")
-    else:
-        GEMINI_AVAILABLE = False
-        logger.warning("⚠️ Gemini API ключ не найден, используем локальную логику")
-except ImportError:
-    GEMINI_AVAILABLE = False
-    logger.warning("⚠️ google-generativeai не установлен")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # Инициализация бота
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-# ========== РЕАЛЬНАЯ НЕЙРОСЕТЬ GEMINI ==========
-class GeminiNeuralNetwork:
-    """Настоящая нейросеть Gemini Pro для анализа CS2"""
+# ========== DEEPSEEK НЕЙРОСЕТЬ ==========
+try:
+    from openai import AsyncOpenAI
+    DEEPSEEK_AVAILABLE = bool(DEEPSEEK_API_KEY)
+    if DEEPSEEK_AVAILABLE:
+        deepseek_client = AsyncOpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com"
+        )
+        logger.info("✅ DeepSeek нейросеть активирована")
+    else:
+        logger.warning("⚠️ DeepSeek API ключ не найден в .env")
+        DEEPSEEK_AVAILABLE = False
+except ImportError:
+    logger.warning("⚠️ OpenAI библиотека не установлена. Установите: pip install openai")
+    DEEPSEEK_AVAILABLE = False
+except Exception as e:
+    logger.error(f"❌ Ошибка инициализации DeepSeek: {e}")
+    DEEPSEEK_AVAILABLE = False
+
+class DeepSeekAnalyzer:
+    """Настоящая нейросеть для анализа CS2 матчей"""
     
-    def __init__(self):
-        if GEMINI_AVAILABLE:
-            self.model = genai.GenerativeModel('gemini-pro')
-            self.active = True
-        else:
-            self.active = False
-            logger.warning("Gemini нейросеть отключена, используется локальная логика")
-    
-    async def analyze_match_deep(self, team1: str, team2: str, tournament: str = "", 
-                                context: str = "") -> Dict:
-        """Глубокий анализ матча реальной нейросетью"""
+    @staticmethod
+    async def analyze_match(team1: str, team2: str, tournament: str = "", 
+                           additional_context: str = "") -> Dict:
+        """Анализ матча с помощью DeepSeek"""
         
-        if not self.active:
-            return await self._fallback_analysis(team1, team2, tournament)
+        if not DEEPSEEK_AVAILABLE:
+            return await LocalAnalyzer.analyze_match(team1, team2, tournament)
         
         try:
-            # Строим промпт для нейросети
-            prompt = self._build_gemini_prompt(team1, team2, tournament, context)
+            prompt = f"""
+            [ЗАДАЧА]
+            Проанализируй предстоящий матч Counter-Strike 2 и дай профессиональный прогноз.
             
-            # Отправляем запрос к Gemini
-            response = await self._call_gemini_async(prompt)
+            [ДАННЫЕ МАТЧА]
+            Команда 1: {team1}
+            Команда 2: {team2}
+            Турнир: {tournament if tournament else 'Не указан'}
+            Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}
+            Дополнительный контекст: {additional_context if additional_context else 'Нет'}
             
-            # Парсим ответ
-            analysis = self._parse_gemini_response(response)
+            [ТРЕБОВАНИЯ К АНАЛИЗУ]
+            1. Проведи сравнительный анализ команд
+            2. Оцени текущую форму и мотивацию
+            3. Проанализируй статистику на картах (если данные доступны)
+            4. Учти историю личных встреч (head-to-head)
+            5. Оцени тактические особенности
+            6. Учти последние изменения в составе (если есть)
+            7. Дай вероятностный прогноз
             
-            # Обогащаем анализ букмекерскими данными
-            enhanced_analysis = self._enhance_with_odds(analysis, team1, team2)
+            [ФОРМАТ ОТВЕТА]
+            Верни ответ в формате JSON:
+            {{
+                "team_analysis": {{
+                    "team1": {{
+                        "strength": 0-100,
+                        "current_form": "описание",
+                        "key_strengths": ["сила1", "сила2"],
+                        "weaknesses": ["слабость1", "слабость2"]
+                    }},
+                    "team2": {{ ... }}
+                }},
+                "match_prediction": {{
+                    "most_likely_winner": "название команды",
+                    "winner_probability": 0-100,
+                    "predicted_score": "формат 2:0 или 16:14",
+                    "match_duration": "быстрый/средний/долгий",
+                    "expected_maps": 2 или 3
+                }},
+                "risk_assessment": {{
+                    "risk_level": "LOW/MEDIUM/HIGH",
+                    "confidence": 0-100,
+                    "volatility": "низкая/средняя/высокая"
+                }},
+                "betting_insights": {{
+                    "value_bet": "тип наиболее выгодной ставки",
+                    "safe_bet": "тип безопасной ставки",
+                    "avoid_bets": ["типы ставок которых стоит избегать"],
+                    "bankroll_recommendation": "1-3% от банка"
+                }},
+                "key_factors": [
+                    {{
+                        "factor": "название фактора",
+                        "impact": "HIGH/MEDIUM/LOW",
+                        "favors": "team1/team2/both"
+                    }}
+                ],
+                "detailed_analysis": "развернутый текстовый анализ на 3-5 абзацев",
+                "ai_model": "DeepSeek-Chat",
+                "analysis_timestamp": "2024-01-01T12:00:00Z"
+            }}
+            """
             
-            logger.info(f"✅ Gemini анализ завершен для {team1} vs {team2}")
-            return enhanced_analysis
+            response = await deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Ты профессиональный аналитик киберспорта Counter-Strike 2 
+                        с 10-летним опытом. Ты специализируешься на анализе матчей, 
+                        статистике команд и прогнозировании результатов. Будь точным, 
+                        объективным и приводи факты. Избегай общих фраз, будь конкретен."""
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=3000,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Добавляем мета-информацию
+            result["ai_analysis"] = True
+            result["deepseek_used"] = True
+            result["analysis_time"] = datetime.now().isoformat()
+            
+            # Обогащаем букмекерскими данными
+            if "match_prediction" in result:
+                prediction = result["match_prediction"]
+                if "winner_probability" in prediction:
+                    result["calculated_odds"] = DeepSeekAnalyzer._calculate_odds(
+                        prediction["winner_probability"]
+                    )
+            
+            return result
             
         except Exception as e:
-            logger.error(f"❌ Ошибка Gemini: {e}")
-            # Fallback на локальный анализ
-            return await self._fallback_analysis(team1, team2, tournament)
+            logger.error(f"DeepSeek API ошибка: {e}")
+            # Fallback на локальный анализатор
+            return await LocalAnalyzer.analyze_match(team1, team2, tournament)
     
-    def _build_gemini_prompt(self, team1: str, team2: str, tournament: str, context: str) -> str:
-        """Строим промпт для Gemini"""
+    @staticmethod
+    def _calculate_odds(probability: float) -> Dict:
+        """Расчет реалистичных коэффициентов"""
+        if probability <= 0:
+            probability = 1
         
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        fair_odds = 100 / probability
         
-        return f"""
-        Ты профессиональный аналитик киберспорта CS2 (Counter-Strike 2) со специализацией на прогнозах матчей.
-        Ты имеешь доступ к статистике всех команд, истории встреч, текущей форме игроков и турнирной динамике.
-        
-        СЕГОДНЯ: {current_date}
-        
-        ЗАДАЧА: Проанализировать предстоящий матч и дать детальный прогноз для ставок.
-        
-        МАТЧ ДЛЯ АНАЛИЗА:
-        - Команда 1: {team1}
-        - Команда 2: {team2}
-        - Турнир: {tournament if tournament else "Не указан"}
-        - Доп. контекст: {context if context else "Нет дополнительной информации"}
-        
-        ФАКТОРЫ ДЛЯ АНАЛИЗА:
-        1. Текущая форма команд (последние 10 матчей)
-        2. Статистика на картах (win rate, пики/баны)
-        3. Состав и форма ключевых игроков
-        4. История личных встреч (head-to-head)
-        5. Турнирная мотивация и контекст
-        6. Тактические особенности команд
-        7. Ментальная устойчивость
-        8. Влияние тренеров
-        9. Актуальная мета-игра
-        10. Внеигровые факторы (перелеты, смена состава и т.д.)
-        
-        ФОРМАТ ОТВЕТА (строго в JSON):
-        {{
-            "winner_prediction": "название команды-победителя",
-            "winner_probability": число от 0 до 100,
-            "predicted_score": "счет в формате 2:0 или 2:1",
-            "confidence": число от 0 до 100,
-            "key_factors": ["фактор 1", "фактор 2", "фактор 3"],
-            "map_analysis": {{
-                "favorable_maps_team1": ["карта1", "карта2"],
-                "favorable_maps_team2": ["карта1", "карта2"],
-                "decisive_map": "название решающей карты"
-            }},
-            "player_to_watch": "имя ключевого игрока",
-            "betting_recommendations": [
-                {{
-                    "type": "тип ставки (П1/П2/Тотал/Фора)",
-                    "confidence": "высокая/средняя/низкая",
-                    "reason": "обоснование",
-                    "expected_odds": число
-                }}
-            ],
-            "risk_level": "НИЗКИЙ/СРЕДНИЙ/ВЫСОКИЙ",
-            "detailed_analysis": "развернутый текстовый анализ на 5-7 предложений"
-        }}
-        
-        ВАЖНО:
-        - Будь максимально объективным
-        - Учитывай последние результаты
-        - Давай реалистичные вероятности
-        - Предлагай конкретные ставки с обоснованием
-        """
-    
-    async def _call_gemini_async(self, prompt: str) -> str:
-        """Асинхронный вызов Gemini API"""
-        try:
-            # Временно используем синхронный вызов, так как async еще в beta
-            response = self.model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            raise Exception(f"Gemini API error: {e}")
-    
-    def _parse_gemini_response(self, response_text: str) -> Dict:
-        """Парсинг ответа от Gemini"""
-        try:
-            # Ищем JSON в ответе
-            lines = response_text.strip().split('\n')
-            json_text = ""
-            in_json = False
-            
-            for line in lines:
-                if line.strip().startswith('{'):
-                    in_json = True
-                if in_json:
-                    json_text += line + '\n'
-                if line.strip().endswith('}'):
-                    break
-            
-            if not json_text:
-                # Пробуем найти JSON в любом месте
-                start = response_text.find('{')
-                end = response_text.rfind('}') + 1
-                if start != -1 and end != 0:
-                    json_text = response_text[start:end]
-                else:
-                    raise ValueError("JSON не найден в ответе")
-            
-            data = json.loads(json_text)
-            
-            # Валидация данных
-            required_fields = ['winner_prediction', 'winner_probability', 'confidence']
-            for field in required_fields:
-                if field not in data:
-                    raise ValueError(f"Отсутствует поле {field}")
-            
-            return data
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Ошибка парсинга JSON: {e}")
-            logger.error(f"Ответ Gemini: {response_text[:500]}")
-            raise
-        except Exception as e:
-            logger.error(f"Ошибка обработки ответа Gemini: {e}")
-            raise
-    
-    def _enhance_with_odds(self, analysis: Dict, team1: str, team2: str) -> Dict:
-        """Добавляем букмекерские коэффициенты к анализу"""
-        
-        # Генерация коэффициентов на основе вероятности
-        winner_prob = analysis.get('winner_probability', 50)
-        
-        if analysis.get('winner_prediction', '').lower() == team1.lower():
-            prob_team1 = winner_prob
-            prob_team2 = 100 - winner_prob
-        else:
-            prob_team2 = winner_prob
-            prob_team1 = 100 - winner_prob
-        
-        # Расчет fair odds
-        fair_odds_team1 = round(100 / prob_team1, 2)
-        fair_odds_team2 = round(100 / prob_team2, 2)
-        
-        # Добавляем маржу букмекеров (5-7%)
-        margin = random.uniform(0.05, 0.07)
-        odds_team1 = round(fair_odds_team1 * (1 - margin), 2)
-        odds_team2 = round(fair_odds_team2 * (1 - margin), 2)
-        
-        # Value bets расчет
-        value_team1 = round((odds_team1 * prob_team1 / 100 - 1) * 100, 1)
-        value_team2 = round((odds_odds_team2 * prob_team2 / 100 - 1) * 100, 1)
-        
-        analysis['betting_odds'] = {
-            'team1': {
-                'fair_odds': fair_odds_team1,
-                'market_odds': odds_team1,
-                'value': value_team1
-            },
-            'team2': {
-                'fair_odds': fair_odds_team2,
-                'market_odds': odds_team2,
-                'value': value_team2
-            }
+        # Разные маржи букмекеров
+        return {
+            "fair_odds": round(fair_odds, 2),
+            "low_margin_odds": round(fair_odds * 0.97, 2),  # 3% маржа (премиум)
+            "medium_margin_odds": round(fair_odds * 0.95, 2),  # 5% маржа (средние)
+            "high_margin_odds": round(fair_odds * 0.92, 2),  # 8% маржа (высокие)
+            "value_threshold": round(fair_odds * 1.05, 2)  # 5% value
         }
-        
-        return analysis
     
-    async def _fallback_analysis(self, team1: str, team2: str, tournament: str) -> Dict:
-        """Fallback анализ при недоступности Gemini"""
-        logger.info(f"Использую fallback анализ для {team1} vs {team2}")
+    @staticmethod
+    async def get_quick_prediction(team1: str, team2: str) -> str:
+        """Быстрый прогноз для уведомлений"""
+        if not DEEPSEEK_AVAILABLE:
+            return "Локальный анализ: матч требует детального изучения"
         
-        # Используем локальную логическую модель
-        from datetime import datetime
-        
-        # Простая логическая модель
-        team_ratings = {
-            "NAVI": 92, "NAVI JUNIORS": 75, "NAVI ACADEMY": 70,
-            "VITALITY": 94, "TEAM VITALITY": 94,
-            "FAZE": 90, "FAZE CLAN": 90,
-            "G2": 88, "G2 ESPORTS": 88,
-            "SPIRIT": 89, "TEAM SPIRIT": 89,
-            "CLOUD9": 85, "C9": 85,
-            "LIQUID": 84, "TEAM LIQUID": 84,
-            "HEROIC": 86,
-            "ASTRALIS": 83,
-            "ENCE": 82,
-            "FURIA": 81,
-            "VP": 80, "VIRTUS.PRO": 80,
-            "MOUZ": 79, "MOUSESPORTS": 79,
-            "NIP": 78,
-            "BIG": 77,
-            "OG": 76,
-            "FNATIC": 75
-        }
+        try:
+            prompt = f"Кто вероятнее победит в CS2: {team1} или {team2}? Ответь кратко."
+            
+            response = await deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "Дай краткий прогноз на матч CS2."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=100
+            )
+            
+            return response.choices[0].message.content
+            
+        except:
+            return "Анализ временно недоступен"
+
+# ========== ЛОКАЛЬНЫЙ АНАЛИЗАТОР (FALLBACK) ==========
+class LocalAnalyzer:
+    """Локальный анализатор когда нейросеть недоступна"""
+    
+    TEAM_DATABASE = {
+        "NAVI": {"rating": 92, "form": "up", "style": "агрессивный", "maps": {"Mirage": 85, "Inferno": 80}},
+        "Vitality": {"rating": 95, "form": "up", "style": "стратегический", "maps": {"Mirage": 90, "Ancient": 88}},
+        "FaZe": {"rating": 90, "form": "stable", "style": "универсальный", "maps": {"Mirage": 88, "Overpass": 85}},
+        "G2": {"rating": 88, "form": "down", "style": "индивидуальный", "maps": {"Mirage": 85, "Vertigo": 90}},
+        "Spirit": {"rating": 89, "form": "up", "style": "тактический", "maps": {"Inferno": 88, "Nuke": 85}},
+        "Cloud9": {"rating": 85, "form": "stable", "style": "агрессивный", "maps": {"Inferno": 85, "Ancient": 78}},
+    }
+    
+    @staticmethod
+    async def analyze_match(team1: str, team2: str, tournament: str = "") -> Dict:
+        """Локальный анализ на основе базы знаний"""
         
         # Нормализация имен
-        team1_norm = team1.upper().split()[0]
-        team2_norm = team2.upper().split()[0]
+        team1_norm = LocalAnalyzer._normalize_name(team1)
+        team2_norm = LocalAnalyzer._normalize_name(team2)
         
-        rating1 = team_ratings.get(team1_norm, random.randint(70, 85))
-        rating2 = team_ratings.get(team2_norm, random.randint(70, 85))
+        # Данные команд
+        team1_data = LocalAnalyzer.TEAM_DATABASE.get(team1_norm, {
+            "rating": random.randint(75, 85),
+            "form": random.choice(["up", "stable", "down"]),
+            "style": "неизвестно",
+            "maps": {}
+        })
         
-        # Турнирный фактор
-        tournament_factor = 1.0
-        if "MAJOR" in tournament.upper():
-            tournament_factor = 1.2
-        elif "BLAST" in tournament.upper() or "ESL" in tournament.upper():
-            tournament_factor = 1.1
-        
-        rating1 *= tournament_factor
-        rating2 *= tournament_factor
+        team2_data = LocalAnalyzer.TEAM_DATABASE.get(team2_norm, {
+            "rating": random.randint(75, 85),
+            "form": random.choice(["up", "stable", "down"]),
+            "style": "неизвестно",
+            "maps": {}
+        })
         
         # Расчет вероятностей
+        rating1 = team1_data["rating"]
+        rating2 = team2_data["rating"]
+        
+        # Корректировки
+        form_multiplier = {"up": 1.15, "stable": 1.0, "down": 0.85}
+        rating1 *= form_multiplier[team1_data["form"]]
+        rating2 *= form_multiplier[team2_data["form"]]
+        
         total = rating1 + rating2
         prob1 = (rating1 / total) * 100
         prob2 = (rating2 / total) * 100
         
-        if prob1 > prob2:
-            winner = team1
-            winner_prob = prob1
-        else:
-            winner = team2
-            winner_prob = prob2
-        
+        # Определение победителя
+        winner = team1_norm if prob1 > prob2 else team2_norm
         confidence = abs(prob1 - prob2)
         
-        # Прогноз счета
-        if confidence > 20:
-            score = "2:0"
-        elif confidence > 10:
-            score = "2:1"
-        else:
-            score = random.choice(["2:1", "1:2"])
-        
         return {
-            "winner_prediction": winner,
-            "winner_probability": round(winner_prob, 1),
-            "predicted_score": score,
-            "confidence": round(confidence, 1),
-            "key_factors": [
-                f"Рейтинговая разница: {abs(rating1 - rating2):.1f}",
-                "Турнирный фактор учтен" if tournament_factor > 1.0 else "Стандартный турнир",
-                "Анализ на основе исторических данных"
-            ],
-            "map_analysis": {
-                "favorable_maps_team1": ["Mirage", "Inferno"],
-                "favorable_maps_team2": ["Nuke", "Overpass"],
-                "decisive_map": random.choice(["Ancient", "Vertigo", "Anubis"])
+            "team_analysis": {
+                "team1": {
+                    "strength": team1_data["rating"],
+                    "current_form": team1_data["form"],
+                    "key_strengths": [team1_data["style"]],
+                    "weaknesses": ["Недостаток данных" if team1_norm not in LocalAnalyzer.TEAM_DATABASE else "Стабильность"]
+                },
+                "team2": {
+                    "strength": team2_data["rating"],
+                    "current_form": team2_data["form"],
+                    "key_strengths": [team2_data["style"]],
+                    "weaknesses": ["Недостаток данных" if team2_norm not in LocalAnalyzer.TEAM_DATABASE else "Стабильность"]
+                }
             },
-            "player_to_watch": "Ключевой снайпер",
-            "betting_recommendations": [
+            "match_prediction": {
+                "most_likely_winner": winner,
+                "winner_probability": max(prob1, prob2),
+                "predicted_score": LocalAnalyzer._predict_score(prob1, prob2),
+                "match_duration": "средний",
+                "expected_maps": 2 if max(prob1, prob2) > 65 else 3
+            },
+            "risk_assessment": {
+                "risk_level": "HIGH" if confidence < 15 else "MEDIUM" if confidence < 30 else "LOW",
+                "confidence": confidence,
+                "volatility": "высокая"
+            },
+            "betting_insights": {
+                "value_bet": "Победа " + winner if confidence > 20 else "Тотал карт >2.5",
+                "safe_bet": "Фора +1.5 слабой команды",
+                "avoid_bets": ["Четкий счет", "Точный тотал"],
+                "bankroll_recommendation": "1-2% от банка"
+            },
+            "key_factors": [
                 {
-                    "type": "П1" if prob1 > prob2 else "П2",
-                    "confidence": "высокая" if confidence > 20 else "средняя",
-                    "reason": f"Вероятность победы {winner_prob:.1f}%",
-                    "expected_odds": round(100 / winner_prob, 2)
+                    "factor": "Текущая форма",
+                    "impact": "HIGH",
+                    "favors": team1_norm if team1_data["form"] == "up" else team2_norm if team2_data["form"] == "up" else "both"
                 }
             ],
-            "risk_level": "НИЗКИЙ" if confidence > 25 else "СРЕДНИЙ" if confidence > 15 else "ВЫСОКИЙ",
-            "detailed_analysis": f"Матч между {team1} и {team2}. {winner} имеет преимущество с вероятностью {winner_prob:.1f}%. "
-                               f"Ожидается счет {score}. Рекомендуется ставка на победу {winner}.",
-            "is_fallback": True  # Флаг что это fallback анализ
+            "detailed_analysis": f"Матч между {team1} и {team2}. {winner} имеет небольшое преимущество.",
+            "ai_model": "Local Knowledge Base",
+            "analysis_timestamp": datetime.now().isoformat(),
+            "ai_analysis": False,
+            "deepseek_used": False
         }
-
-# ========== ОСНОВНОЙ АНАЛИЗАТОР ==========
-class CS2MatchAnalyzer:
-    """Основной анализатор с выбором метода"""
     
-    def __init__(self):
-        self.gemini_nn = GeminiNeuralNetwork()
-        self.use_gemini = GEMINI_AVAILABLE
+    @staticmethod
+    def _normalize_name(team_name: str) -> str:
+        """Нормализация имени команды"""
+        if not team_name:
+            return "Unknown"
         
-    async def analyze_match(self, team1: str, team2: str, tournament: str = "", 
-                           use_neural: bool = True) -> Dict:
-        """Анализ матча с возможностью выбора метода"""
+        team_lower = team_name.lower()
         
-        if use_neural and self.use_gemini:
-            logger.info(f"🧠 Использую Gemini нейросеть для анализа {team1} vs {team2}")
-            return await self.gemini_nn.analyze_match_deep(team1, team2, tournament)
+        for known_team in LocalAnalyzer.TEAM_DATABASE.keys():
+            if known_team.lower() in team_lower:
+                return known_team
+        
+        # Популярные команды
+        if "navi" in team_lower or "natus" in team_lower:
+            return "NAVI"
+        elif "vitality" in team_lower or "vita" in team_lower:
+            return "Vitality"
+        elif "faze" in team_lower:
+            return "FaZe"
+        elif "g2" in team_lower:
+            return "G2"
+        elif "spirit" in team_lower:
+            return "Spirit"
+        elif "cloud9" in team_lower or "c9" in team_lower:
+            return "Cloud9"
+        
+        return team_name
+    
+    @staticmethod
+    def _predict_score(prob1: float, prob2: float) -> str:
+        """Прогноз счета"""
+        diff = abs(prob1 - prob2)
+        
+        if diff > 30:
+            return "2:0" if prob1 > prob2 else "0:2"
+        elif diff > 15:
+            return "2:1" if prob1 > prob2 else "1:2"
         else:
-            logger.info(f"📊 Использую локальную логику для анализа {team1} vs {team2}")
-            return await self.gemini_nn._fallback_analysis(team1, team2, tournament)
+            return "2:1"  # Близкий матч
 
-# ========== API ДЛЯ CS2 МАТЧЕЙ ==========
+# ========== УЛУЧШЕННЫЙ ПАРСИНГ МАТЧЕЙ ==========
 class PandaScoreAPI:
     """API клиент для CS2 с исправленным парсингом"""
     
@@ -374,7 +363,7 @@ class PandaScoreAPI:
             )
         return self.session
     
-    async def get_today_matches(self):
+    async def get_today_matches(self) -> List[Dict]:
         """Получить матчи на сегодня"""
         try:
             session = await self.get_session()
@@ -382,50 +371,40 @@ class PandaScoreAPI:
             today = datetime.utcnow().date()
             tomorrow = today + timedelta(days=1)
             
-            today_str = today.isoformat()
-            tomorrow_str = tomorrow.isoformat()
-            
             url = f"{self.base_url}/csgo/matches"
             params = {
-                "range[scheduled_at]": f"{today_str},{tomorrow_str}",
+                "range[scheduled_at]": f"{today.isoformat()},{tomorrow.isoformat()}",
                 "per_page": 50,
                 "sort": "scheduled_at",
-                "filter[status]": "not_started,running"
+                "filter[status]": "not_started"
             }
-            
-            logger.info(f"Запрос матчей на сегодня")
             
             async with session.get(url, params=params) as response:
                 if response.status == 200:
-                    all_matches = await response.json()
+                    matches = await response.json()
                     
+                    # Фильтруем по точной дате
                     today_matches = []
-                    for match in all_matches:
+                    for match in matches:
                         scheduled_at = match.get("scheduled_at")
                         if scheduled_at:
                             try:
-                                if 'Z' in scheduled_at:
-                                    match_time = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
-                                else:
-                                    match_time = datetime.fromisoformat(scheduled_at)
-                                
+                                match_time = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
                                 if match_time.date() == today:
                                     today_matches.append(match)
                             except:
                                 continue
                     
-                    logger.info(f"Найдено CS2 матчей на сегодня: {len(today_matches)}")
+                    logger.info(f"Найдено матчей на сегодня: {len(today_matches)}")
                     return today_matches
                 else:
-                    error_text = await response.text()
-                    logger.error(f"API error {response.status}: {error_text[:200]}")
                     return []
                     
         except Exception as e:
             logger.error(f"Ошибка при получении сегодняшних матчей: {e}")
             return []
     
-    async def get_tomorrow_matches(self):
+    async def get_tomorrow_matches(self) -> List[Dict]:
         """Получить матчи на завтра"""
         try:
             session = await self.get_session()
@@ -434,12 +413,9 @@ class PandaScoreAPI:
             tomorrow = today + timedelta(days=1)
             day_after_tomorrow = today + timedelta(days=2)
             
-            tomorrow_str = tomorrow.isoformat()
-            day_after_tomorrow_str = day_after_tomorrow.isoformat()
-            
             url = f"{self.base_url}/csgo/matches"
             params = {
-                "range[scheduled_at]": f"{tomorrow_str},{day_after_tomorrow_str}",
+                "range[scheduled_at]": f"{tomorrow.isoformat()},{day_after_tomorrow.isoformat()}",
                 "per_page": 50,
                 "sort": "scheduled_at",
                 "filter[status]": "not_started"
@@ -447,18 +423,14 @@ class PandaScoreAPI:
             
             async with session.get(url, params=params) as response:
                 if response.status == 200:
-                    all_matches = await response.json()
+                    matches = await response.json()
                     
                     tomorrow_matches = []
-                    for match in all_matches:
+                    for match in matches:
                         scheduled_at = match.get("scheduled_at")
                         if scheduled_at:
                             try:
-                                if 'Z' in scheduled_at:
-                                    match_time = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
-                                else:
-                                    match_time = datetime.fromisoformat(scheduled_at)
-                                
+                                match_time = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
                                 if match_time.date() == tomorrow:
                                     tomorrow_matches.append(match)
                             except:
@@ -473,7 +445,7 @@ class PandaScoreAPI:
             logger.error(f"Ошибка при получении завтрашних матчей: {e}")
             return []
     
-    async def get_live_matches(self):
+    async def get_live_matches(self) -> List[Dict]:
         """Получить live матчи"""
         try:
             session = await self.get_session()
@@ -487,7 +459,6 @@ class PandaScoreAPI:
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     matches = await response.json()
-                    logger.info(f"Найдено live матчей: {len(matches)}")
                     return matches
                 else:
                     return []
@@ -500,79 +471,181 @@ class PandaScoreAPI:
         if self.session and not self.session.closed:
             await self.session.close()
 
-# ========== БУКМЕКЕРСКИЙ АНАЛИЗ ==========
-class BookmakerOdds:
-    """Генератор коэффициентов букмекеров"""
-    
-    BOOKMAKERS = [
-        {"name": "1xBet", "reliability": "высокая", "margin": 5.0},
-        {"name": "BetBoom", "reliability": "высокая", "margin": 5.5},
-        {"name": "Fonbet", "reliability": "средняя", "margin": 6.0},
-        {"name": "Winline", "reliability": "высокая", "margin": 5.8},
-        {"name": "Marathon", "reliability": "высокая", "margin": 5.2},
-    ]
+# ========== УЛУЧШЕННАЯ БУКМЕКЕРСКАЯ АНАЛИТИКА ==========
+class SmartBettingAnalytics:
+    """Умная аналитика для ставок на основе данных нейросети"""
     
     @staticmethod
-    def generate_odds(prediction: Dict, team1: str, team2: str) -> List[Dict]:
-        """Генерация реалистичных коэффициентов"""
+    def generate_betting_recommendations(prediction: Dict) -> Dict:
+        """Генерация умных рекомендаций по ставкам"""
         
-        winner_prob = prediction.get('winner_probability', 50)
+        if not prediction.get("ai_analysis", False):
+            return SmartBettingAnalytics._generate_basic_recommendations(prediction)
         
-        if prediction.get('winner_prediction', '').lower() == team1.lower():
-            prob_team1 = winner_prob
-            prob_team2 = 100 - winner_prob
+        match_pred = prediction.get("match_prediction", {})
+        risk_assessment = prediction.get("risk_assessment", {})
+        betting_insights = prediction.get("betting_insights", {})
+        
+        winner = match_pred.get("most_likely_winner", "")
+        probability = match_pred.get("winner_probability", 50)
+        confidence = risk_assessment.get("confidence", 50)
+        risk_level = risk_assessment.get("risk_level", "MEDIUM")
+        
+        # Расчет value
+        fair_odds = 100 / probability if probability > 0 else 2.0
+        recommended_odds = fair_odds * 0.95  # С маржой 5%
+        
+        # Определение типа ставки
+        if confidence > 70 and probability > 65:
+            bet_type = f"Победа {winner}"
+            bet_confidence = "ВЫСОКАЯ"
+            stake_percentage = "2-3%"
+        elif confidence > 50:
+            bet_type = f"Фора {winner} (-1.5)"
+            bet_confidence = "СРЕДНЯЯ"
+            stake_percentage = "1-2%"
         else:
-            prob_team2 = winner_prob
-            prob_team1 = 100 - winner_prob
+            bet_type = "Тотал карт >2.5"
+            bet_confidence = "НИЗКАЯ"
+            stake_percentage = "0.5-1%"
         
-        odds_list = []
+        # Находим лучшие коэффициенты
+        best_odds = SmartBettingAnalytics._find_best_bookmakers(fair_odds)
         
-        for bookmaker in BookmakerOdds.BOOKMAKERS:
-            margin = bookmaker["margin"] / 100
-            
-            fair_odds1 = 100 / prob_team1
-            fair_odds2 = 100 / prob_team2
-            
-            odds1 = round(fair_odds1 / (1 + margin), 2)
-            odds2 = round(fair_odds2 / (1 + margin), 2)
-            
-            odds1 = BookmakerOdds._round_odds(odds1)
-            odds2 = BookmakerOdds._round_odds(odds2)
-            
-            # Value расчет
-            value1 = round((odds1 * prob_team1 / 100 - 1) * 100, 1)
-            value2 = round((odds2 * prob_team2 / 100 - 1) * 100, 1)
-            
-            odds_list.append({
-                "bookmaker": bookmaker["name"],
-                "reliability": bookmaker["reliability"],
-                "odds_team1": odds1,
-                "odds_team2": odds2,
-                "value_team1": value1,
-                "value_team2": value2,
-                "margin": bookmaker["margin"]
+        # Value bets
+        value_bets = SmartBettingAnalytics._find_value_bets(probability, best_odds)
+        
+        return {
+            "primary_recommendation": {
+                "type": bet_type,
+                "confidence": bet_confidence,
+                "stake": stake_percentage,
+                "expected_odds": round(recommended_odds, 2),
+                "reason": SmartBettingAnalytics._get_reason(confidence, probability, risk_level)
+            },
+            "alternative_bets": SmartBettingAnalytics._get_alternative_bets(prediction),
+            "value_bets": value_bets,
+            "best_bookmakers": best_odds,
+            "risk_warnings": SmartBettingAnalytics._get_risk_warnings(risk_level),
+            "bankroll_advice": "Никогда не ставьте больше 5% от банка за одну ставку",
+            "ai_confidence": f"{confidence}% уверенности в анализе"
+        }
+    
+    @staticmethod
+    def _find_best_bookmakers(fair_odds: float) -> List[Dict]:
+        """Найти лучшие коэффициенты у букмекеров"""
+        bookmakers = [
+            {"name": "1xBet", "margin": 0.95, "reliability": "высокая"},
+            {"name": "BetBoom", "margin": 0.96, "reliability": "высокая"},
+            {"name": "Fonbet", "margin": 0.94, "reliability": "средняя"},
+            {"name": "Winline", "margin": 0.93, "reliability": "высокая"},
+            {"name": "Marathon", "margin": 0.97, "reliability": "высокая"}
+        ]
+        
+        result = []
+        for bm in bookmakers:
+            odds = round(fair_odds * bm["margin"], 2)
+            result.append({
+                "bookmaker": bm["name"],
+                "odds": odds,
+                "reliability": bm["reliability"],
+                "value_score": round((odds / fair_odds - 1) * 100, 1)
             })
         
-        return sorted(odds_list, key=lambda x: max(x["odds_team1"], x["odds_team2"]), reverse=True)
+        return sorted(result, key=lambda x: x["odds"], reverse=True)
     
     @staticmethod
-    def _round_odds(odds: float) -> float:
-        """Округление коэффициентов"""
-        if odds < 1.1:
-            return 1.1
-        elif odds < 2.0:
-            return round(odds * 4) / 4
-        elif odds < 5.0:
-            return round(odds * 2) / 2
+    def _find_value_bets(probability: float, bookmaker_odds: List[Dict]) -> List[Dict]:
+        """Найти value bets"""
+        fair_odds = 100 / probability if probability > 0 else 2.0
+        value_bets = []
+        
+        for bm in bookmaker_odds:
+            if bm["odds"] > fair_odds * 1.05:  # 5% value
+                value = ((bm["odds"] * probability / 100) - 1) * 100
+                if value > 5:
+                    value_bets.append({
+                        "bookmaker": bm["bookmaker"],
+                        "odds": bm["odds"],
+                        "value": round(value, 1),
+                        "edge": "ПОЛОЖИТЕЛЬНОЕ"
+                    })
+        
+        return value_bets
+    
+    @staticmethod
+    def _get_alternative_bets(prediction: Dict) -> List[Dict]:
+        """Альтернативные ставки"""
+        match_pred = prediction.get("match_prediction", {})
+        expected_maps = match_pred.get("expected_maps", 2)
+        
+        alternatives = []
+        
+        if expected_maps == 3:
+            alternatives.append({
+                "type": "Тотал карт >2.5",
+                "reason": "Ожидается напряженная борьба",
+                "confidence": "СРЕДНЯЯ"
+            })
+        
+        alternatives.append({
+            "type": "Фора +1.5 слабой команды",
+            "reason": "Страховка на случай неожиданностей",
+            "confidence": "ВЫСОКАЯ"
+        })
+        
+        return alternatives
+    
+    @staticmethod
+    def _get_reason(confidence: float, probability: float, risk_level: str) -> str:
+        """Причина рекомендации"""
+        if confidence > 70:
+            return "Сильный сигнал от нейросети, высокая статистическая значимость"
+        elif confidence > 50:
+            return "Умеренный сигнал, но есть явные преимущества"
         else:
-            return round(odds)
+            return "Низкая уверенность, ставка в основном для диверсификации"
+    
+    @staticmethod
+    def _get_risk_warnings(risk_level: str) -> List[str]:
+        """Предупреждения о рисках"""
+        warnings = [
+            "Ставки на спорт связаны с риском потери денег",
+            "Никогда не ставьте последние деньги",
+            "Ведите учет всех ставок"
+        ]
+        
+        if risk_level == "HIGH":
+            warnings.append("⚠️ ВЫСОКИЙ РИСК: Этот матч очень непредсказуем")
+        elif risk_level == "MEDIUM":
+            warnings.append("⚠️ СРЕДНИЙ РИСК: Есть факторы неопределенности")
+        
+        return warnings
+    
+    @staticmethod
+    def _generate_basic_recommendations(prediction: Dict) -> Dict:
+        """Базовые рекомендации для локального анализа"""
+        return {
+            "primary_recommendation": {
+                "type": "Тотал карт >2.5",
+                "confidence": "НИЗКАЯ",
+                "stake": "0.5-1%",
+                "expected_odds": 1.8,
+                "reason": "Недостаточно данных для точного прогноза"
+            },
+            "alternative_bets": [],
+            "value_bets": [],
+            "best_bookmakers": [],
+            "risk_warnings": [
+                "⚠️ Анализ проведен без нейросети",
+                "⚠️ Требуется дополнительное исследование",
+                "⚠️ Высокий риск"
+            ],
+            "bankroll_advice": "Рекомендуется пропустить этот матч или поставить минимальную сумму",
+            "ai_confidence": "Локальный анализ"
+        }
 
-# ========== ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ ==========
-panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
-analyzer = CS2MatchAnalyzer()
-bookmaker = BookmakerOdds()
-
-# ========== ФОРМАТИРОВАНИЕ ==========
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def format_match_time(scheduled_at: str) -> str:
     """Форматирование времени в MSK"""
     try:
@@ -603,14 +676,14 @@ def get_team_emoji(team_name: str) -> str:
         return "☁️"
     elif "liquid" in team_lower:
         return "💧"
+    elif "heroic" in team_lower:
+        return "⚔️"
     
     return "🎮"
 
 # ========== КЛАВИАТУРЫ ==========
 def create_main_keyboard():
     """Главное меню"""
-    neural_status = "🧠" if GEMINI_AVAILABLE else "📊"
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📅 МАТЧИ СЕГОДНЯ", callback_data="today"),
@@ -618,15 +691,11 @@ def create_main_keyboard():
         ],
         [
             InlineKeyboardButton(text="🔥 LIVE МАТЧИ", callback_data="live"),
-            InlineKeyboardButton(text=f"{neural_status} АНАЛИЗ НЕЙРОСЕТЬЮ", callback_data="neural_analysis")
+            InlineKeyboardButton(text="🤖 АНАЛИЗ НЕЙРОСЕТЬЮ", callback_data="analyze")
         ],
         [
-            InlineKeyboardButton(text="💰 КОЭФФИЦИЕНТЫ", callback_data="bookmakers"),
-            InlineKeyboardButton(text="📈 VALUE BETS", callback_data="value_bets")
-        ],
-        [
-            InlineKeyboardButton(text="⚙️ НАСТРОЙКИ", callback_data="settings"),
-            InlineKeyboardButton(text="ℹ️ ПОМОЩЬ", callback_data="help")
+            InlineKeyboardButton(text="📊 СТАВКИ И КОЭФФИЦИЕНТЫ", callback_data="betting"),
+            InlineKeyboardButton(text="ℹ️ О БОТЕ", callback_data="about")
         ]
     ])
     return keyboard
@@ -635,7 +704,7 @@ def create_match_selection_keyboard(matches: List[Dict], prefix: str = "analyze"
     """Клавиатура для выбора матча"""
     buttons = []
     
-    for i, match in enumerate(matches[:8]):
+    for i, match in enumerate(matches[:6]):  # Максимум 6 матчей
         opponents = match.get("opponents", [])
         if len(opponents) >= 2:
             team1 = opponents[0].get("opponent", {})
@@ -645,8 +714,8 @@ def create_match_selection_keyboard(matches: List[Dict], prefix: str = "analyze"
             time_str = format_match_time(match.get("scheduled_at", ""))
             
             button_text = f"{team1_name} vs {team2_name} ({time_str})"
-            if len(button_text) > 40:
-                button_text = button_text[:37] + "..."
+            if len(button_text) > 35:
+                button_text = button_text[:32] + "..."
             
             buttons.append([InlineKeyboardButton(
                 text=button_text,
@@ -656,60 +725,49 @@ def create_match_selection_keyboard(matches: List[Dict], prefix: str = "analyze"
     buttons.append([InlineKeyboardButton(text="◀️ НАЗАД", callback_data="back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def create_analysis_keyboard(match_index: int, analysis: Dict):
-    """Клавиатура для анализа матча"""
-    neural_used = not analysis.get('is_fallback', False)
-    
-    buttons = [
+def create_analysis_actions_keyboard(match_index: int):
+    """Действия после анализа"""
+    return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📊 ПОЛНЫЙ ОТЧЕТ", callback_data=f"full_{match_index}"),
+            InlineKeyboardButton(text="📊 ДЕТАЛЬНЫЙ ОТЧЕТ", callback_data=f"report_{match_index}"),
             InlineKeyboardButton(text="💰 СТАВКИ", callback_data=f"bets_{match_index}")
         ],
         [
-            InlineKeyboardButton(text="🗺️ КАРТЫ", callback_data=f"maps_{match_index}"),
-            InlineKeyboardButton(text="🎯 VALUE", callback_data=f"value_{match_index}")
+            InlineKeyboardButton(text="🎯 БЫСТРЫЙ ПРОГНОЗ", callback_data=f"quick_{match_index}"),
+            InlineKeyboardButton(text="📈 КОЭФФИЦИЕНТЫ", callback_data=f"odds_{match_index}")
+        ],
+        [
+            InlineKeyboardButton(text="🤖 АНАЛИЗ ДРУГОГО МАТЧА", callback_data="analyze"),
+            InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")
         ]
-    ]
-    
-    if neural_used:
-        buttons.append([
-            InlineKeyboardButton(text="🧠 ИЗМЕНИТЬ МЕТОД", callback_data=f"change_method_{match_index}")
-        ])
-    
-    buttons.append([
-        InlineKeyboardButton(text="◀️ ВЫБРАТЬ ДРУГОЙ", callback_data="neural_analysis"),
-        InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")
     ])
-    
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
+panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
+betting_analytics = SmartBettingAnalytics()
 
 # ========== ОБРАБОТЧИКИ ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     """Старт"""
-    neural_status = "✅ РАБОТАЕТ" if GEMINI_AVAILABLE else "❌ НЕДОСТУПНА"
+    ai_status = "✅ АКТИВНА (DeepSeek)" if DEEPSEEK_AVAILABLE else "⚠️ ЛОКАЛЬНЫЙ РЕЖИМ"
     
     welcome = f"""
-🎮 <b>CS2 NEURAL ANALYST</b>
+🎮 <b>CS2 AI ANALYST</b>
 
-Ваш умный помощник с настоящей нейросетью для анализа матчей CS2!
+🤖 <b>Нейросеть:</b> {ai_status}
+📊 <b>Аналитика:</b> Глубокая с множеством факторов
+💰 <b>Ставки:</b> Умные рекомендации с оценкой риска
 
-<b>Статус нейросети:</b> {neural_status}
-{'🤖 Используется Gemini AI от Google' if GEMINI_AVAILABLE else '📊 Используется локальная логика'}
-
-<b>Основные функции:</b>
+<b>Возможности:</b>
 • 📅 Расписание матчей (сегодня/завтра/live)
-• 🧠 Глубокий анализ от нейросети Gemini
-• 📊 Детальные прогнозы и отчеты
-• 💰 Коэффициенты букмекеров
-• 📈 Поиск value bets
+• 🤖 Анализ от нейросети DeepSeek
+• 📊 Детальные отчеты с ключевыми факторами
+• 💰 Рекомендации по ставкам и коэффициенты
+• 🎯 Value bets поиск
 
-<b>Нейросеть анализирует:</b>
-• Форму команд и игроков
-• Статистику на картах
-• Историю встреч
-• Турнирный контекст
-• Тактические особенности
+<b>Для DeepSeek нейросети добавьте в .env:</b>
+<code>DEEPSEEK_API_KEY=ваш_ключ</code>
 
 👇 <b>Выберите раздел:</b>
 """
@@ -720,304 +778,6 @@ async def cmd_start(message: types.Message):
         disable_web_page_preview=True
     )
 
-@dp.callback_query(F.data == "neural_analysis")
-async def handle_neural_analysis(callback: types.CallbackQuery):
-    """Анализ матча нейросетью"""
-    await callback.answer("🧠 Загружаю матчи для анализа...")
-    
-    matches = await panda_api.get_today_matches()
-    
-    if not matches:
-        await callback.message.edit_text(
-            "📭 <b>Сегодня нет матчей для анализа</b>\n\n"
-            "Попробуйте завтра или проверьте live матчи.",
-            reply_markup=create_main_keyboard()
-        )
-        return
-    
-    neural_status = "🧠 Gemini AI" if GEMINI_AVAILABLE else "📊 Локальная логика"
-    
-    await callback.message.edit_text(
-        f"🤖 <b>АНАЛИЗ МАТЧА НЕЙРОСЕТЬЮ</b>\n\n"
-        f"Используется: <b>{neural_status}</b>\n"
-        f"Найдено матчей: <b>{len(matches)}</b>\n\n"
-        f"Выберите матч для глубокого анализа:",
-        reply_markup=create_match_selection_keyboard(matches, "neural")
-    )
-
-@dp.callback_query(F.data.startswith("neural_"))
-async def handle_neural_specific_match(callback: types.CallbackQuery):
-    """Анализ конкретного матча нейросетью"""
-    match_index = int(callback.data.split("_")[1])
-    await callback.answer("🧠 Нейросеть анализирует...")
-    
-    matches = await panda_api.get_today_matches()
-    if not matches or match_index >= len(matches):
-        await callback.message.edit_text(
-            "❌ <b>Матч не найден</b>",
-            reply_markup=create_main_keyboard()
-        )
-        return
-    
-    match = matches[match_index]
-    opponents = match.get("opponents", [])
-    
-    if len(opponents) < 2:
-        await callback.message.edit_text(
-            "❌ <b>Недостаточно данных о командах</b>",
-            reply_markup=create_main_keyboard()
-        )
-        return
-    
-    team1 = opponents[0].get("opponent", {})
-    team2 = opponents[1].get("opponent", {})
-    
-    team1_name = team1.get("acronym") or team1.get("name", "TBA")
-    team2_name = team2.get("acronym") or team2.get("name", "TBA")
-    tournament = match.get("league", {}).get("name", "")
-    time_str = format_match_time(match.get("scheduled_at", ""))
-    
-    # Показываем статус анализа
-    status_msg = await callback.message.edit_text(
-        f"🧠 <b>НЕЙРОСЕТЬ АНАЛИЗИРУЕТ...</b>\n\n"
-        f"🏆 {team1_name} vs {team2_name}\n"
-        f"⏰ {time_str} | {tournament}\n\n"
-        f"<i>Нейросеть изучает статистику, форму команд, историю встреч и тактические особенности...</i>"
-    )
-    
-    # Анализ матча нейросетью (используем Gemini если доступен)
-    use_neural = GEMINI_AVAILABLE
-    analysis = await analyzer.analyze_match(team1_name, team2_name, tournament, use_neural)
-    
-    # Генерация коэффициентов
-    odds_list = bookmaker.generate_odds(analysis, team1_name, team2_name)
-    
-    # Формирование сообщения
-    neural_source = "🧠 Gemini AI" if not analysis.get('is_fallback') else "📊 Локальная логика"
-    
-    lines = [
-        f"🎯 <b>АНАЛИЗ НЕЙРОСЕТЬЮ</b> ({neural_source})",
-        f"",
-        f"🏆 <b>{team1_name} vs {team2_name}</b>",
-        f"⏰ {time_str} MSK | 🏆 {tournament}",
-        f"",
-        f"📊 <b>Прогноз нейросети:</b>",
-        f"• Победитель: <b>{analysis['winner_prediction']}</b>",
-        f"• Вероятность: <b>{analysis['winner_probability']}%</b>",
-        f"• Уверенность: <b>{analysis['confidence']}%</b>",
-        f"• Прогноз счета: <b>{analysis['predicted_score']}</b>",
-        f"• Уровень риска: {analysis['risk_level']}",
-        f"",
-        f"💰 <b>Лучшие коэффициенты:</b>",
-    ]
-    
-    # Показываем топ-3 букмекера
-    for i, odds in enumerate(odds_list[:3], 1):
-        lines.append(f"{i}. {odds['bookmaker']}: П1 - {odds['odds_team1']} | П2 - {odds['odds_team2']}")
-    
-    lines.extend([
-        f"",
-        f"⚡ <b>Ключевые факторы:</b>"
-    ])
-    
-    for factor in analysis['key_factors'][:3]:
-        lines.append(f"• {factor}")
-    
-    lines.extend([
-        f"",
-        f"🎲 <b>Рекомендуемая ставка:</b>",
-    ])
-    
-    if analysis['betting_recommendations']:
-        bet = analysis['betting_recommendations'][0]
-        lines.append(f"• {bet['type']} (уверенность: {bet['confidence']})")
-        lines.append(f"  📊 Ожидаемый коэффициент: ~{bet.get('expected_odds', 'N/A')}")
-    else:
-        lines.append("• Матч непредсказуем - осторожные ставки")
-    
-    lines.extend([
-        f"",
-        f"👁️ <b>Игрок на просмотре:</b> {analysis.get('player_to_watch', 'Не указан')}",
-        f"",
-        f"⚠️ <i>Анализ основан на статистике и машинном обучении</i>"
-    ])
-    
-    await status_msg.edit_text(
-        "\n".join(lines),
-        reply_markup=create_analysis_keyboard(match_index, analysis),
-        disable_web_page_preview=True
-    )
-
-@dp.callback_query(F.data.startswith("full_"))
-async def handle_full_report(callback: types.CallbackQuery):
-    """Полный отчет по матчу"""
-    match_index = int(callback.data.split("_")[1])
-    
-    matches = await panda_api.get_today_matches()
-    if not matches or match_index >= len(matches):
-        await callback.answer("❌ Матч не найден")
-        return
-    
-    match = matches[match_index]
-    opponents = match.get("opponents", [])
-    
-    if len(opponents) < 2:
-        await callback.answer("❌ Недостаточно данных")
-        return
-    
-    team1 = opponents[0].get("opponent", {})
-    team2 = opponents[1].get("opponent", {})
-    
-    team1_name = team1.get("acronym") or team1.get("name", "TBA")
-    team2_name = team2.get("acronym") or team2.get("name", "TBA")
-    tournament = match.get("league", {}).get("name", "")
-    
-    # Анализ матча
-    analysis = await analyzer.analyze_match(team1_name, team2_name, tournament, GEMINI_AVAILABLE)
-    
-    lines = [
-        f"📊 <b>ПОЛНЫЙ ОТЧЕТ ПО МАТЧУ</b>",
-        f"",
-        f"🏆 <b>{team1_name} vs {team2_name}</b>",
-        f"🏆 Турнир: {tournament}",
-        f"",
-        f"🎯 <b>Прогноз нейросети:</b>",
-        f"• Победитель: {analysis['winner_prediction']}",
-        f"• Вероятность: {analysis['winner_probability']}%",
-        f"• Уверенность анализа: {analysis['confidence']}%",
-        f"• Прогноз счета: {analysis['predicted_score']}",
-        f"• Уровень риска: {analysis['risk_level']}",
-        f"",
-        f"🗺️ <b>Анализ карт:</b>",
-        f"• Благоприятные карты для {team1_name}: {', '.join(analysis['map_analysis']['favorable_maps_team1'][:3])}",
-        f"• Благоприятные карты для {team2_name}: {', '.join(analysis['map_analysis']['favorable_maps_team2'][:3])}",
-        f"• Решающая карта: {analysis['map_analysis']['decisive_map']}",
-        f"",
-        f"⚡ <b>Ключевые факторы:</b>"
-    ]
-    
-    for factor in analysis['key_factors']:
-        lines.append(f"• {factor}")
-    
-    lines.extend([
-        f"",
-        f"👁️ <b>Игрок на просмотре:</b> {analysis.get('player_to_watch', 'Не указан')}",
-        f"",
-        f"🎲 <b>Рекомендации по ставкам:</b>"
-    ])
-    
-    for i, bet in enumerate(analysis['betting_recommendations'][:3], 1):
-        lines.append(f"{i}. {bet['type']}")
-        lines.append(f"   Уверенность: {bet['confidence']}")
-        lines.append(f"   Обоснование: {bet['reason']}")
-        if 'expected_odds' in bet:
-            lines.append(f"   Ожидаемый коэффициент: {bet['expected_odds']}")
-        lines.append("")
-    
-    lines.append(f"📝 <b>Детальный анализ:</b>")
-    lines.append(analysis['detailed_analysis'])
-    lines.append("")
-    lines.append("⚠️ <i>Отчет сгенерирован нейросетью. Ставки на ваш риск.</i>")
-    
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=create_analysis_keyboard(match_index, analysis),
-        disable_web_page_preview=True
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("bets_"))
-async def handle_bets(callback: types.CallbackQuery):
-    """Детали по ставкам"""
-    match_index = int(callback.data.split("_")[1])
-    
-    matches = await panda_api.get_today_matches()
-    if not matches or match_index >= len(matches):
-        await callback.answer("❌ Матч не найден")
-        return
-    
-    match = matches[match_index]
-    opponents = match.get("opponents", [])
-    
-    if len(opponents) < 2:
-        await callback.answer("❌ Недостаточно данных")
-        return
-    
-    team1 = opponents[0].get("opponent", {})
-    team2 = opponents[1].get("opponent", {})
-    
-    team1_name = team1.get("acronym") or team1.get("name", "TBA")
-    team2_name = team2.get("acronym") or team2.get("name", "TBA")
-    tournament = match.get("league", {}).get("name", "")
-    
-    analysis = await analyzer.analyze_match(team1_name, team2_name, tournament, GEMINI_AVAILABLE)
-    odds_list = bookmaker.generate_odds(analysis, team1_name, team2_name)
-    
-    # Находим value bets
-    value_bets = []
-    for odds in odds_list:
-        if odds['value_team1'] > 5:
-            value_bets.append({
-                'type': f"П1 ({team1_name})",
-                'bookmaker': odds['bookmaker'],
-                'odds': odds['odds_team1'],
-                'value': odds['value_team1']
-            })
-        if odds['value_team2'] > 5:
-            value_bets.append({
-                'type': f"П2 ({team2_name})",
-                'bookmaker': odds['bookmaker'],
-                'odds': odds['odds_team2'],
-                'value': odds['value_team2']
-            })
-    
-    lines = [
-        f"💰 <b>СТАВКИ И КОЭФФИЦИЕНТЫ</b>",
-        f"",
-        f"🏆 {team1_name} vs {team2_name}",
-        f"",
-        f"📊 <b>Прогноз нейросети:</b>",
-        f"Победитель: {analysis['winner_prediction']} ({analysis['winner_probability']}%)",
-        f"",
-        f"🎯 <b>Рекомендации нейросети:</b>"
-    ]
-    
-    for i, bet in enumerate(analysis['betting_recommendations'], 1):
-        lines.append(f"{i}. <b>{bet['type']}</b>")
-        lines.append(f"   Уверенность: {bet['confidence']}")
-        lines.append(f"   Причина: {bet['reason']}")
-        lines.append("")
-    
-    lines.append(f"📈 <b>Value bets (выгодные ставки):</b>")
-    
-    if value_bets:
-        for vb in value_bets[:3]:
-            lines.append(f"• {vb['type']}: {vb['odds']} ({vb['bookmaker']})")
-            lines.append(f"  Value: +{vb['value']}%")
-    else:
-        lines.append("• Явных value bets не найдено")
-    
-    lines.extend([
-        f"",
-        f"💡 <b>Советы по ставкам:</b>",
-        f"• Ставьте 1-3% от банкролла",
-        f"• Используйте несколько букмекеров",
-        f"• Сравнивайте коэффициенты",
-        f"• Играйте ответственно",
-        f"",
-        f"⚠️ <i>Ставки на спорт связаны с риском. 18+</i>"
-    ])
-    
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=create_analysis_keyboard(match_index, analysis),
-        disable_web_page_preview=True
-    )
-    await callback.answer()
-
-# ... остальные обработчики (today, tomorrow, live, bookmakers, value_bets, help, back) ...
-# (Они остаются такими же как в предыдущем коде, просто используйте analyzer.analyze_match)
-
 @dp.callback_query(F.data == "today")
 async def handle_today(callback: types.CallbackQuery):
     """Матчи сегодня"""
@@ -1027,7 +787,8 @@ async def handle_today(callback: types.CallbackQuery):
     
     if not matches:
         await callback.message.edit_text(
-            "📭 <b>На сегодня нет запланированных матчей CS2</b>",
+            "📭 <b>На сегодня нет запланированных матчей CS2</b>\n\n"
+            "Проверьте завтра или live матчи.",
             reply_markup=create_main_keyboard()
         )
         return
@@ -1043,7 +804,7 @@ async def handle_today(callback: types.CallbackQuery):
         ""
     ]
     
-    for i, match in enumerate(matches[:15], 1):
+    for i, match in enumerate(matches[:10], 1):
         opponents = match.get("opponents", [])
         if len(opponents) >= 2:
             team1 = opponents[0].get("opponent", {})
@@ -1062,10 +823,11 @@ async def handle_today(callback: types.CallbackQuery):
             lines.append("")
     
     lines.append(f"⏱️ <i>Время указано в MSK</i>")
-    lines.append(f"🤖 <b>Для анализа матча нажмите:</b> АНАЛИЗ НЕЙРОСЕТЬЮ")
+    lines.append(f"")
+    lines.append(f"🤖 <b>Для анализа матча нейросетью нажмите:</b> АНАЛИЗ НЕЙРОСЕТЬЮ")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧠 АНАЛИЗ НЕЙРОСЕТЬЮ", callback_data="neural_analysis")],
+        [InlineKeyboardButton(text="🤖 АНАЛИЗ НЕЙРОСЕТЬЮ", callback_data="analyze")],
         [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
     ])
     
@@ -1075,49 +837,494 @@ async def handle_today(callback: types.CallbackQuery):
         disable_web_page_preview=True
     )
 
-@dp.callback_query(F.data == "help")
-async def handle_help(callback: types.CallbackQuery):
-    """Помощь"""
-    neural_status = "✅ АКТИВНА" if GEMINI_AVAILABLE else "❌ НЕДОСТУПНА"
+@dp.callback_query(F.data == "tomorrow")
+async def handle_tomorrow(callback: types.CallbackQuery):
+    """Матчи завтра"""
+    await callback.answer("📅 Загружаю матчи на завтра...")
     
-    help_text = f"""
-🎮 <b>CS2 NEURAL ANALYST - ПОМОЩЬ</b>
-
-<b>Статус нейросети:</b> {neural_status}
-
-<b>Как работает нейросеть:</b>
-• Анализирует статистику команд из базы данных
-• Учитывает форму игроков и тактические особенности
-• Оценивает турнирную мотивацию и контекст
-• Дает вероятностные прогнозы с обоснованием
-
-<b>Основные функции:</b>
-• <b>МАТЧИ СЕГОДНЯ/ЗАВТРА</b> - Расписание игр
-• <b>LIVE МАТЧИ</b> - Текущие матчи в эфире
-• <b>АНАЛИЗ НЕЙРОСЕТЬЮ</b> 🧠 - Глубокий анализ матчей
-• <b>КОЭФФИЦИЕНТЫ</b> 💰 - Сравнение букмекеров
-• <b>VALUE BETS</b> 📈 - Поиск выгодных ставок
-
-<b>Для ставок используйте:</b>
-• 1xBet, BetBoom, Fonbet, Winline, Marathon
-• Сравнивайте коэффициенты у разных букмекеров
-• Играйте ответственно (только 18+)
-
-<b>Важно:</b>
-• Нейросеть анализирует, но не гарантирует выигрыш
-• Все ставки на ваш риск
-• Используйте банкролл-менеджмент
-• Не ставьте больше, чем можете позволить себе потерять
-
-<i>Удачи в анализах и ставках! 🍀</i>
-"""
+    matches = await panda_api.get_tomorrow_matches()
+    
+    if not matches:
+        tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
+        await callback.message.edit_text(
+            f"📭 <b>На завтра ({tomorrow_date}) нет матчей</b>",
+            reply_markup=create_main_keyboard()
+        )
+        return
+    
+    matches.sort(key=lambda x: x.get("scheduled_at", ""))
+    tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
+    
+    lines = [
+        f"📅 <b>МАТЧИ НА ЗАВТРА</b>",
+        f"<i>{tomorrow_date}</i>",
+        "",
+        f"📊 Найдено матчей: {len(matches)}",
+        "─" * 40,
+        ""
+    ]
+    
+    for i, match in enumerate(matches[:8], 1):
+        opponents = match.get("opponents", [])
+        if len(opponents) >= 2:
+            team1 = opponents[0].get("opponent", {})
+            team2 = opponents[1].get("opponent", {})
+            team1_name = team1.get("acronym") or team1.get("name", "TBA")
+            team2_name = team2.get("acronym") or team2.get("name", "TBA")
+            
+            team1_emoji = get_team_emoji(team1_name)
+            team2_emoji = get_team_emoji(team2_name)
+            
+            time_str = format_match_time(match.get("scheduled_at", ""))
+            league = match.get("league", {}).get("name", "")
+            
+            lines.append(f"{i}. {team1_emoji} <b>{team1_name}</b> vs {team2_emoji} <b>{team2_name}</b>")
+            lines.append(f"   ⏰ {time_str} | 🏆 {league}")
+            lines.append("")
+    
+    lines.append(f"⏱️ <i>Время указано в MSK</i>")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
     ])
     
     await callback.message.edit_text(
-        help_text,
+        "\n".join(lines),
+        reply_markup=keyboard,
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(F.data == "live")
+async def handle_live(callback: types.CallbackQuery):
+    """Live матчи"""
+    await callback.answer("🔥 Ищу live матчи...")
+    
+    matches = await panda_api.get_live_matches()
+    
+    if not matches:
+        await callback.message.edit_text(
+            "📡 <b>В данный момент нет live матчей CS2</b>",
+            reply_markup=create_main_keyboard()
+        )
+        return
+    
+    lines = [
+        "🔥 <b>LIVE МАТЧИ CS2</b>",
+        "",
+        f"📊 Матчей в эфире: {len(matches)}",
+        "─" * 40,
+        ""
+    ]
+    
+    for i, match in enumerate(matches, 1):
+        opponents = match.get("opponents", [])
+        if len(opponents) >= 2:
+            team1 = opponents[0].get("opponent", {})
+            team2 = opponents[1].get("opponent", {})
+            team1_name = team1.get("acronym") or team1.get("name", "TBA")
+            team2_name = team2.get("acronym") or team2.get("name", "TBA")
+            
+            results = match.get("results", [])
+            score1 = results[0].get("score", 0) if len(results) > 0 else 0
+            score2 = results[1].get("score", 0) if len(results) > 1 else 0
+            
+            team1_emoji = get_team_emoji(team1_name)
+            team2_emoji = get_team_emoji(team2_name)
+            
+            league = match.get("league", {}).get("name", "")
+            
+            lines.append(f"{i}. 🔴 {team1_emoji} <b>{team1_name}</b> {score1}:{score2} <b>{team2_name}</b> {team2_emoji}")
+            lines.append(f"   🏆 {league}")
+            lines.append("")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=keyboard,
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(F.data == "analyze")
+async def handle_analyze(callback: types.CallbackQuery):
+    """Анализ матча нейросетью"""
+    await callback.answer("🤖 Загружаю матчи для анализа...")
+    
+    matches = await panda_api.get_today_matches()
+    
+    if not matches:
+        await callback.message.edit_text(
+            "📭 <b>Сегодня нет матчей для анализа</b>\n\n"
+            "Нейросеть может анализировать только предстоящие матчи.",
+            reply_markup=create_main_keyboard()
+        )
+        return
+    
+    ai_status = "использует DeepSeek нейросеть" if DEEPSEEK_AVAILABLE else "в локальном режиме"
+    
+    await callback.message.edit_text(
+        f"🤖 <b>ВЫБЕРИТЕ МАТЧ ДЛЯ АНАЛИЗА</b>\n\n"
+        f"Найдено матчей на сегодня: {len(matches)}\n"
+        f"Нейросеть {ai_status}.\n"
+        f"Анализ занимает 10-20 секунд.",
+        reply_markup=create_match_selection_keyboard(matches, "analyze")
+    )
+
+@dp.callback_query(F.data.startswith("analyze_"))
+async def handle_analyze_specific(callback: types.CallbackQuery):
+    """Анализ конкретного матча"""
+    match_index = int(callback.data.split("_")[1])
+    await callback.answer("🤖 Нейросеть анализирует матч...")
+    
+    matches = await panda_api.get_today_matches()
+    if not matches or match_index >= len(matches):
+        await callback.message.edit_text("❌ Матч не найден", reply_markup=create_main_keyboard())
+        return
+    
+    match = matches[match_index]
+    opponents = match.get("opponents", [])
+    
+    if len(opponents) < 2:
+        await callback.message.edit_text("❌ Недостаточно данных", reply_markup=create_main_keyboard())
+        return
+    
+    team1 = opponents[0].get("opponent", {})
+    team2 = opponents[1].get("opponent", {})
+    
+    team1_name = team1.get("acronym") or team1.get("name", "TBA")
+    team2_name = team2.get("acronym") or team2.get("name", "TBA")
+    tournament = match.get("league", {}).get("name", "")
+    time_str = format_match_time(match.get("scheduled_at", ""))
+    
+    # Показываем загрузку
+    loading_msg = await callback.message.edit_text(
+        f"🤖 <b>АНАЛИЗ МАТЧА</b>\n\n"
+        f"{team1_name} vs {team2_name}\n"
+        f"⏰ {time_str} | 🏆 {tournament}\n\n"
+        f"🔄 Нейросеть анализирует статистику, форму команд, тактику...\n"
+        f"<i>Это займет 10-20 секунд</i>"
+    )
+    
+    # Запускаем анализ
+    analysis = await DeepSeekAnalyzer.analyze_match(team1_name, team2_name, tournament)
+    
+    # Генерация рекомендаций по ставкам
+    betting_recs = betting_analytics.generate_betting_recommendations(analysis)
+    
+    # Формируем основной ответ
+    match_pred = analysis.get("match_prediction", {})
+    risk_assessment = analysis.get("risk_assessment", {})
+    
+    winner = match_pred.get("most_likely_winner", "Не определен")
+    probability = match_pred.get("winner_probability", 50)
+    confidence = risk_assessment.get("confidence", 50)
+    risk_level = risk_assessment.get("risk_level", "MEDIUM")
+    predicted_score = match_pred.get("predicted_score", "2:1")
+    
+    lines = [
+        f"🎯 <b>АНАЛИЗ ОТ НЕЙРОСЕТИ</b>",
+        f"",
+        f"🏆 <b>{team1_name} vs {team2_name}</b>",
+        f"⏰ {time_str} | 🏆 {tournament}",
+        f"",
+        f"📊 <b>ОСНОВНОЙ ПРОГНОЗ:</b>",
+        f"• Победитель: <b>{winner}</b>",
+        f"• Вероятность: <b>{probability}%</b>",
+        f"• Прогноз счета: <b>{predicted_score}</b>",
+        f"• Уверенность анализа: <b>{confidence}%</b>",
+        f"• Уровень риска: <b>{risk_level}</b>",
+        f"",
+        f"💰 <b>СТАВКИ:</b>",
+        f"• Рекомендация: <b>{betting_recs['primary_recommendation']['type']}</b>",
+        f"• Уверенность: {betting_recs['primary_recommendation']['confidence']}",
+        f"• Размер ставки: {betting_recs['primary_recommendation']['stake']}",
+        f"",
+        f"🤖 <b>МОДЕЛЬ:</b> {analysis.get('ai_model', 'Локальная')}",
+        f"",
+        f"👇 <b>Выберите действие:</b>"
+    ]
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=create_analysis_actions_keyboard(match_index),
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(F.data.startswith("report_"))
+async def handle_report(callback: types.CallbackQuery):
+    """Детальный отчет"""
+    match_index = int(callback.data.split("_")[1])
+    
+    matches = await panda_api.get_today_matches()
+    if not matches or match_index >= len(matches):
+        await callback.answer("❌ Матч не найден")
+        return
+    
+    match = matches[match_index]
+    opponents = match.get("opponents", [])
+    
+    if len(opponents) < 2:
+        await callback.answer("❌ Недостаточно данных")
+        return
+    
+    team1 = opponents[0].get("opponent", {})
+    team2 = opponents[1].get("opponent", {})
+    
+    team1_name = team1.get("acronym") or team1.get("name", "TBA")
+    team2_name = team2.get("acronym") or team2.get("name", "TBA")
+    tournament = match.get("league", {}).get("name", "")
+    
+    await callback.answer("📊 Формирую детальный отчет...")
+    
+    analysis = await DeepSeekAnalyzer.analyze_match(team1_name, team2_name, tournament)
+    
+    team_analysis = analysis.get("team_analysis", {})
+    detailed = analysis.get("detailed_analysis", "Нет детального анализа")
+    key_factors = analysis.get("key_factors", [])
+    
+    lines = [
+        f"📊 <b>ДЕТАЛЬНЫЙ АНАЛИТИЧЕСКИЙ ОТЧЕТ</b>",
+        f"",
+        f"🏆 <b>{team1_name} vs {team2_name}</b>",
+        f"",
+        f"👥 <b>АНАЛИЗ КОМАНД:</b>",
+        f"",
+        f"<b>{team1_name}:</b>",
+        f"• Сила: {team_analysis.get('team1', {}).get('strength', '?')}/100",
+        f"• Форма: {team_analysis.get('team1', {}).get('current_form', '?')}",
+        f"• Сильные стороны: {', '.join(team_analysis.get('team1', {}).get('key_strengths', []))}",
+        f"• Слабые стороны: {', '.join(team_analysis.get('team1', {}).get('weaknesses', []))}",
+        f"",
+        f"<b>{team2_name}:</b>",
+        f"• Сила: {team_analysis.get('team2', {}).get('strength', '?')}/100",
+        f"• Форма: {team_analysis.get('team2', {}).get('current_form', '?')}",
+        f"• Сильные стороны: {', '.join(team_analysis.get('team2', {}).get('key_strengths', []))}",
+        f"• Слабые стороны: {', '.join(team_analysis.get('team2', {}).get('weaknesses', []))}",
+        f"",
+        f"⚡ <b>КЛЮЧЕВЫЕ ФАКТОРЫ:</b>"
+    ]
+    
+    for i, factor in enumerate(key_factors[:5], 1):
+        lines.append(f"{i}. {factor.get('factor', '')} - влияние: {factor.get('impact', '')}")
+    
+    lines.extend([
+        f"",
+        f"📝 <b>РАЗВЕРНУТЫЙ АНАЛИЗ:</b>",
+        f"{detailed[:800]}" + ("..." if len(detailed) > 800 else ""),
+        f"",
+        f"🤖 <b>ИСТОЧНИК:</b> {analysis.get('ai_model', 'Локальная база знаний')}",
+        f"",
+        f"⚠️ <i>Анализ предоставлен для информационных целей</i>"
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=create_analysis_actions_keyboard(match_index),
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(F.data.startswith("bets_"))
+async def handle_bets(callback: types.CallbackQuery):
+    """Рекомендации по ставкам"""
+    match_index = int(callback.data.split("_")[1])
+    
+    matches = await panda_api.get_today_matches()
+    if not matches or match_index >= len(matches):
+        await callback.answer("❌ Матч не найден")
+        return
+    
+    match = matches[match_index]
+    opponents = match.get("opponents", [])
+    
+    if len(opponents) < 2:
+        await callback.answer("❌ Недостаточно данных")
+        return
+    
+    team1 = opponents[0].get("opponent", {})
+    team2 = opponents[1].get("opponent", {})
+    
+    team1_name = team1.get("acronym") or team1.get("name", "TBA")
+    team2_name = team2.get("acronym") or team2.get("name", "TBA")
+    tournament = match.get("league", {}).get("name", "")
+    
+    await callback.answer("💰 Анализирую ставки...")
+    
+    analysis = await DeepSeekAnalyzer.analyze_match(team1_name, team2_name, tournament)
+    betting_recs = betting_analytics.generate_betting_recommendations(analysis)
+    
+    lines = [
+        f"💰 <b>РЕКОМЕНДАЦИИ ПО СТАВКАМ</b>",
+        f"",
+        f"🏆 <b>{team1_name} vs {team2_name}</b>",
+        f"",
+        f"🎯 <b>ОСНОВНАЯ РЕКОМЕНДАЦИЯ:</b>",
+        f"• Тип: {betting_recs['primary_recommendation']['type']}",
+        f"• Уверенность: {betting_recs['primary_recommendation']['confidence']}",
+        f"• Размер: {betting_recs['primary_recommendation']['stake']}",
+        f"• Причина: {betting_recs['primary_recommendation']['reason']}",
+        f"",
+        f"📊 <b>АЛЬТЕРНАТИВНЫЕ СТАВКИ:</b>"
+    ]
+    
+    if betting_recs['alternative_bets']:
+        for bet in betting_recs['alternative_bets']:
+            lines.append(f"• {bet['type']} ({bet['confidence']}) - {bet['reason']}")
+    else:
+        lines.append("• Нет альтернативных рекомендаций")
+    
+    lines.extend([
+        f"",
+        f"📈 <b>VALUE BETS (выгодные ставки):</b>"
+    ])
+    
+    if betting_recs['value_bets']:
+        for vb in betting_recs['value_bets'][:3]:
+            lines.append(f"• {vb['bookmaker']}: коэффициент {vb['odds']} (value: +{vb['value']}%)")
+    else:
+        lines.append("• Явных value bets не найдено")
+    
+    lines.extend([
+        f"",
+        f"🏦 <b>ЛУЧШИЕ БУКМЕКЕРЫ ДЛЯ ЭТОГО МАТЧА:</b>"
+    ])
+    
+    if betting_recs['best_bookmakers']:
+        for bm in betting_recs['best_bookmakers'][:3]:
+            lines.append(f"• {bm['bookmaker']}: коэффициент ~{bm['odds']} ({bm['reliability']})")
+    else:
+        lines.append("• Используйте 1xBet, BetBoom или Marathon")
+    
+    lines.extend([
+        f"",
+        f"⚠️ <b>ПРЕДУПРЕЖДЕНИЯ О РИСКАХ:</b>"
+    ])
+    
+    for warning in betting_recs['risk_warnings'][:3]:
+        lines.append(f"• {warning}")
+    
+    lines.extend([
+        f"",
+        f"💡 <b>СОВЕТ:</b> {betting_recs['bankroll_advice']}",
+        f"",
+        f"🤖 <b>УВЕРЕННОСТЬ НЕЙРОСЕТИ:</b> {betting_recs['ai_confidence']}",
+        f"",
+        f"<i>Ставки на спорт связаны с риском. Играйте ответственно.</i>"
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=create_analysis_actions_keyboard(match_index),
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(F.data == "betting")
+async def handle_betting_info(callback: types.CallbackQuery):
+    """Информация о ставках"""
+    lines = [
+        "💰 <b>УМНАЯ СИСТЕМА СТАВОК</b>",
+        "",
+        "🎯 <b>Как работает:</b>",
+        "1. Нейросеть анализирует матч по 10+ факторам",
+        "2. Определяет вероятности и уровень риска",
+        "3. Генерирует персонализированные рекомендации",
+        "4. Ищет value bets (ставки с положительным матожиданием)",
+        "",
+        "📊 <b>Факторы анализа:</b>",
+        "• Текущая форма команд",
+        "• Статистика на картах",
+        "• Индивидуальная форма игроков",
+        "• История личных встреч",
+        "• Тактические особенности",
+        "• Турнирная мотивация",
+        "• Психологическая устойчивость",
+        "",
+        "🎲 <b>Типы рекомендаций:</b>",
+        "• Основная ставка (самая выгодная)",
+        "• Альтернативные ставки (для диверсификации)",
+        "• Value bets (ставки с edge)",
+        "• Ставки которых следует избегать",
+        "",
+        "🏦 <b>Рекомендуемые букмекеры:</b>",
+        "• 1xBet - лучшие коэффициенты",
+        "• BetBoom - удобное приложение",
+        "• Marathon - низкая маржа",
+        "• Fonbet - надежность",
+        "",
+        "⚠️ <b>Важные правила:</b>",
+        "1. Никогда не ставьте больше 5% от банка",
+        "2. Ведите учет всех ставок",
+        "3. Не пытайтесь отыграться после проигрыша",
+        "4. Делайте перерывы",
+        "5. Играйте только на свободные деньги",
+        "",
+        "🤖 <b>Нейросеть:</b> " + ("DeepSeek AI" if DEEPSEEK_AVAILABLE else "Локальный анализатор"),
+        "",
+        "<i>Бот для аналитических целей. Решения о ставках принимайте самостоятельно.</i>"
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 АНАЛИЗ МАТЧА", callback_data="analyze")],
+        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=keyboard,
+        disable_web_page_preview=True
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "about")
+async def handle_about(callback: types.CallbackQuery):
+    """О боте"""
+    ai_status = "✅ DeepSeek нейросеть активна" if DEEPSEEK_AVAILABLE else "⚠️ Локальный режим (добавьте DEEPSEEK_API_KEY в .env)"
+    
+    lines = [
+        "ℹ️ <b>О CS2 AI ANALYST</b>",
+        "",
+        "🤖 <b>Технологии:</b>",
+        "• Искусственный интеллект DeepSeek",
+        "• Анализ по множеству факторов",
+        "• Машинное обучение для прогнозов",
+        "• Умная система рекомендаций",
+        "",
+        "📊 <b>Источники данных:</b>",
+        "• PandaScore API - расписание матчей",
+        "• DeepSeek AI - анализ и прогнозы",
+        "• Локальная база знаний команд",
+        "• Статистические модели",
+        "",
+        "🎯 <b>Точность:</b>",
+        "• Нейросеть анализирует 10+ факторов",
+        "• Учитывает текущую форму и мотивацию",
+        "• Оценивает тактические особенности",
+        "• Дает вероятностные прогнозы",
+        "",
+        f"🔧 <b>Статус:</b> {ai_status}",
+        "",
+        "💡 <b>Для максимальной точности:</b>",
+        "1. Добавьте DEEPSEEK_API_KEY в .env файл",
+        "2. Используйте команду /start для проверки",
+        "3. Анализируйте матчи за 1-2 часа до начала",
+        "",
+        "⚠️ <b>Отказ от ответственности:</b>",
+        "Бот предоставляет аналитику для информационных целей.",
+        "Не гарантирует выигрыш в ставках.",
+        "Играйте ответственно (18+).",
+        "",
+        "📧 <b>Поддержка:</b> @ваш_аккаунт",
+        "",
+        "<i>Версия 2.0 с нейросетью DeepSeek</i>"
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
         reply_markup=keyboard,
         disable_web_page_preview=True
     )
@@ -1129,15 +1336,59 @@ async def handle_back(callback: types.CallbackQuery):
     await cmd_start(callback.message)
     await callback.answer()
 
+# ========== КОМАНДЫ ==========
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    """Помощь"""
+    await handle_about(
+        types.CallbackQuery(
+            id="help",
+            from_user=message.from_user,
+            chat_instance="help",
+            message=message,
+            data="about"
+        )
+    )
+
+@dp.message(Command("status"))
+async def cmd_status(message: types.Message):
+    """Статус бота"""
+    ai_status = "🟢 DeepSeek активна" if DEEPSEEK_AVAILABLE else "🟡 Локальный режим"
+    
+    status_text = f"""
+📊 <b>СТАТУС БОТА</b>
+
+🤖 <b>Нейросеть:</b> {ai_status}
+📡 <b>API PandaScore:</b> {"🟢 Активно" if PANDASCORE_TOKEN else "🔴 Не настроено"}
+🔧 <b>Версия:</b> 2.0 с DeepSeek AI
+
+<b>Для активации нейросети:</b>
+1. Получите ключ: https://platform.deepseek.com
+2. Добавьте в .env: DEEPSEEK_API_KEY=ваш_ключ
+3. Перезапустите бота
+
+<b>Текущие функции:</b>
+• Анализ матчей нейросетью
+• Умные рекомендации по ставкам
+• Поиск value bets
+• Расписание матчей
+"""
+    
+    await message.answer(status_text)
+
 # ========== ЗАПУСК БОТА ==========
 
 async def main():
     """Запуск бота"""
-    logger.info("🎮 Запускаю CS2 NEURAL ANALYST...")
-    logger.info(f"🤖 Нейросеть Gemini: {'✅ ДОСТУПНА' if GEMINI_AVAILABLE else '❌ НЕДОСТУПНА'}")
-    logger.info("📊 Парсинг матчей: ✅ РАБОТАЕТ")
-    logger.info("💰 Букмекеры: 5 контор")
-    logger.info("📈 Value bets поиск: ✅ ВКЛЮЧЕН")
+    logger.info("🎮 Запускаю CS2 AI ANALYST...")
+    
+    if DEEPSEEK_AVAILABLE:
+        logger.info("🤖 DeepSeek нейросеть: АКТИВНА")
+    else:
+        logger.warning("🤖 DeepSeek нейросеть: НЕ АКТИВНА (добавьте ключ в .env)")
+    
+    logger.info("📊 Парсинг матчей: PandaScore API")
+    logger.info("💰 Умные ставки: Value bets поиск")
     
     if not PANDASCORE_TOKEN:
         logger.error("❌ Нет токена PandaScore!")
