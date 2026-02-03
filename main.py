@@ -46,6 +46,7 @@ class DeepSeekNeuralNetwork:
         
         if DEEPSEEK_AVAILABLE and DEEPSEEK_API_KEY:
             try:
+                # ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ - без параметра proxies
                 self.client = AsyncOpenAI(
                     api_key=DEEPSEEK_API_KEY,
                     base_url="https://api.deepseek.com"
@@ -56,7 +57,10 @@ class DeepSeekNeuralNetwork:
                 logger.error(f"❌ Ошибка инициализации DeepSeek: {e}")
                 self.active = False
         else:
-            logger.warning("⚠️ DeepSeek не активирован. Проверьте API ключ в .env")
+            if not DEEPSEEK_AVAILABLE:
+                logger.warning("⚠️ Библиотека openai не установлена. Установите: pip install openai")
+            if not DEEPSEEK_API_KEY:
+                logger.warning("⚠️ DEEPSEEK_API_KEY не найден в .env файле")
             self.active = False
     
     async def analyze_match(self, team1: str, team2: str, tournament: str = "", 
@@ -73,52 +77,43 @@ class DeepSeekNeuralNetwork:
             
             logger.info(f"🤖 Отправляю запрос к DeepSeek нейросети: {team1} vs {team2}")
             
-            # Запрос к нейросети
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """Ты профессиональный аналитик киберспорта Counter-Strike 2 с доступом к статистике всех матчей.
-                        Твой анализ должен быть максимально точным и учитывать все факторы:
-                        
-                        1. Текущая форма команд (последние 10-15 матчей)
-                        2. Статистика на конкретных картах (winrate, пики/баны)
-                        3. Индивидуальная форма игроков (рейтинг, ADR, impact)
-                        4. История личных встреч (h2h статистика, последние матчи)
-                        5. Турнирная мотивация и важность матча
-                        6. Тактические предпочтения и стиль игры
-                        7. Ментальная устойчивость в ключевых моментах
-                        8. Тренерское влияние и стратегические решения
-                        9. Актуальная мета-игры и патчи CS2
-                        10. Составы команд и возможные замены
-                        
-                        Будь объективным и давай реалистичные прогнозы."""
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=2500,
-                response_format={"type": "json_object"}
-            )
-            
-            # Парсинг ответа
-            result = json.loads(response.choices[0].message.content)
-            logger.info(f"✅ DeepSeek вернул анализ для {team1} vs {team2}")
-            
-            # Обогащаем результат
-            result["source"] = "DeepSeek AI"
-            result["model"] = "deepseek-chat"
-            result["analysis_time"] = datetime.now().strftime("%d.%m.%Y %H:%M")
-            
-            # Добавляем коэффициенты если есть вероятность
-            if "probability" in result:
-                result["odds"] = self._calculate_fair_odds(result["probability"])
-            
-            return result
+            # Запрос к нейросети с обработкой таймаута
+            try:
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": """Ты профессиональный аналитик киберспорта Counter-Strike 2 с доступом к статистике всех матчей.
+                                Твой анализ должен быть максимально точным и учитывать все факторы."""
+                            },
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.3,
+                        max_tokens=2000,
+                        response_format={"type": "json_object"}
+                    ),
+                    timeout=30.0  # Таймаут 30 секунд
+                )
+                
+                # Парсинг ответа
+                result = json.loads(response.choices[0].message.content)
+                logger.info(f"✅ DeepSeek вернул анализ для {team1} vs {team2}")
+                
+                # Обогащаем результат
+                result["source"] = "DeepSeek AI"
+                result["model"] = "deepseek-chat"
+                result["analysis_time"] = datetime.now().strftime("%d.%m.%Y %H:%M")
+                
+                return result
+                
+            except asyncio.TimeoutError:
+                logger.error("❌ Таймаут запроса к DeepSeek API")
+                return await self._fallback_analysis(team1, team2, tournament)
             
         except Exception as e:
-            logger.error(f"❌ Ошибка DeepSeek API: {e}")
+            logger.error(f"❌ Ошибка DeepSeek API: {str(e)[:200]}")
             # Fallback на локальную логику
             return await self._fallback_analysis(team1, team2, tournament)
     
