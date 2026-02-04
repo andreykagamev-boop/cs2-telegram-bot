@@ -48,7 +48,7 @@ class DeepSeekNeuralNetwork:
         
         if DEEPSEEK_AVAILABLE and DEEPSEEK_API_KEY:
             try:
-                # ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ - без параметра proxies
+                # ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ - без лишних параметров
                 self.client = AsyncOpenAI(
                     api_key=DEEPSEEK_API_KEY,
                     base_url="https://api.deepseek.com"
@@ -62,7 +62,7 @@ class DeepSeekNeuralNetwork:
             if not DEEPSEEK_AVAILABLE:
                 logger.warning("⚠️ Библиотека openai не установлена. Установите: pip install openai")
             if not DEEPSEEK_API_KEY:
-                logger.warning("⚠️ DEEPSEEK_API_KEY не найден в .env файле")
+                logger.warning("⚠️ DEEPSEEK_API_KEY не найден")
             self.active = False
     
     async def analyze_match(self, team1: str, team2: str, tournament: str = "", 
@@ -71,7 +71,7 @@ class DeepSeekNeuralNetwork:
         
         if not self.active:
             logger.info("DeepSeek не активен, использую локальную логику")
-            return await self._fallback_analysis(team1, team2, tournament)
+            return self._fallback_analysis(team1, team2, tournament)
         
         try:
             # Строим промпт для анализа
@@ -87,8 +87,9 @@ class DeepSeekNeuralNetwork:
                         messages=[
                             {
                                 "role": "system",
-                                "content": """Ты профессиональный аналитик киберспорта Counter-Strike 2 с доступом к статистике всех матчей.
-                                Твой анализ должен быть максимально точным и учитывать все факторы. Отвечай строго в JSON формате."""
+                                "content": """Ты профессиональный аналитик киберспорта Counter-Strike 2. 
+                                Анализируй матчи на основе статистики, формы команд, состава и тактики.
+                                Отвечай строго в JSON формате."""
                             },
                             {"role": "user", "content": prompt}
                         ],
@@ -96,7 +97,7 @@ class DeepSeekNeuralNetwork:
                         max_tokens=2000,
                         response_format={"type": "json_object"}
                     ),
-                    timeout=45.0  # Увеличенный таймаут
+                    timeout=30.0
                 )
                 
                 # Парсинг ответа
@@ -112,71 +113,63 @@ class DeepSeekNeuralNetwork:
                 
             except asyncio.TimeoutError:
                 logger.error("❌ Таймаут запроса к DeepSeek API")
-                return await self._fallback_analysis(team1, team2, tournament)
+                return self._fallback_analysis(team1, team2, tournament)
             except json.JSONDecodeError as e:
                 logger.error(f"❌ Ошибка парсинга JSON от DeepSeek: {e}")
-                return await self._fallback_analysis(team1, team2, tournament)
+                return self._fallback_analysis(team1, team2, tournament)
             
         except Exception as e:
             logger.error(f"❌ Ошибка DeepSeek API: {str(e)[:200]}")
-            # Fallback на локальную логику
-            return await self._fallback_analysis(team1, team2, tournament)
+            return self._fallback_analysis(team1, team2, tournament)
     
     def _build_analysis_prompt(self, team1: str, team2: str, tournament: str, 
                              match_time: str) -> str:
         """Построение промпта для анализа"""
         return f"""
-        Проанализируй предстоящий матч CS2 и дай максимально точный прогноз.
+Проанализируй предстоящий матч CS2 между {team1} и {team2}.
 
-        [ДАННЫЕ МАТЧА]
-        Команда 1: {team1}
-        Команда 2: {team2}
-        Турнир: {tournament if tournament else 'Не указан'}
-        Время матча: {match_time if match_time else 'Не указано'}
-        Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}
+Турнир: {tournament if tournament else 'Не указан'}
+Время матча: {match_time if match_time else 'Не указано'}
+Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}
 
-        [АНАЛИТИЧЕСКИЕ ТРЕБОВАНИЯ]
-        1. Оцени текущую силу команд по 100-балльной шкале
-        2. Рассчитай точную вероятность победы каждой команды (в процентах)
-        3. Дай реалистичный прогноз счета (формат карт: 2:0, 2:1, 0:2, 1:2)
-        4. Перечисли 3-5 ключевых факторов, которые решат исход матча
-        5. Оцени уровень риска для ставок (НИЗКИЙ/СРЕДНИЙ/ВЫСОКИЙ)
-        6. Предложи 1-2 оптимальных типа ставок для этого матча
-        7. Укажи уверенность в прогнозе от 0 до 100%
-        8. Добавь краткий текстовый анализ сильных и слабых сторон команд
+Проанализируй:
+1. Текущую форму команд
+2. Статистику последних встреч
+3. Составы команд
+4. Тактические особенности
+5. Мотивацию в турнире
 
-        [ФОРМАТ ОТВЕТА]
-        Верни ответ в строгом JSON формате:
-        {{
-          "team1_analysis": {{
-            "strength": 0-100,
-            "current_form": "краткое описание формы",
-            "key_strengths": ["сила1", "сила2"],
-            "weaknesses": ["слабость1", "слабость2"]
-          }},
-          "team2_analysis": {{ ... }},
-          "match_prediction": {{
-            "likely_winner": "название команды",
-            "probability": 0-100,
-            "score_prediction": "2:0 или 2:1 и т.д.",
-            "confidence": 0-100,
-            "risk_level": "LOW/MEDIUM/HIGH"
-          }},
-          "key_factors": ["фактор1", "фактор2", "фактор3"],
-          "recommended_bets": [
-            {{
-              "type": "тип ставки (например: П1, Фора +1.5, Тотал >2.5)",
-              "reason": "краткое обоснование",
-              "confidence": "LOW/MEDIUM/HIGH"
-            }}
-          ],
-          "detailed_analysis": "развернутый анализ на 3-5 предложений"
-        }}
+Предоставь прогноз в следующем JSON формате:
+{{
+  "team1_analysis": {{
+    "strength": "число от 0 до 100",
+    "current_form": "краткое описание",
+    "key_strengths": ["сила1", "сила2"],
+    "weaknesses": ["слабость1", "слабость2"]
+  }},
+  "team2_analysis": {{ ... }},
+  "match_prediction": {{
+    "likely_winner": "{team1} или {team2}",
+    "probability": "число от 0 до 100",
+    "score_prediction": "2:0, 2:1, 1:2, 0:2",
+    "confidence": "число от 0 до 100",
+    "risk_level": "LOW/MEDIUM/HIGH"
+  }},
+  "key_factors": ["фактор1", "фактор2", "фактор3"],
+  "recommended_bets": [
+    {{
+      "type": "тип ставки",
+      "reason": "обоснование",
+      "confidence": "LOW/MEDIUM/HIGH"
+    }}
+  ],
+  "detailed_analysis": "развернутый анализ на 3-5 предложений"
+}}
 
-        Будь максимально точным и реалистичным в прогнозах! Отвечай ТОЛЬКО в JSON формате.
-        """
+Будь максимально точным и реалистичным!
+"""
     
-    async def _fallback_analysis(self, team1: str, team2: str, tournament: str) -> Dict:
+    def _fallback_analysis(self, team1: str, team2: str, tournament: str) -> Dict:
         """Fallback анализ когда DeepSeek недоступен"""
         logger.info(f"Использую fallback анализ для {team1} vs {team2}")
         
@@ -340,6 +333,11 @@ class SmartFallbackAnalyzer:
         "Heroic": {"base_rating": 86, "maps": {"Mirage": 85, "Vertigo": 82}, "form": "stable"},
         "Astralis": {"base_rating": 83, "maps": {"Inferno": 85, "Nuke": 88}, "form": "up"},
         "ENCE": {"base_rating": 82, "maps": {"Ancient": 85, "Mirage": 80}, "form": "stable"},
+        "FURIA": {"base_rating": 81, "maps": {"Vertigo": 85, "Nuke": 78}, "form": "up"},
+        "MOUZ": {"base_rating": 87, "maps": {"Inferno": 88, "Mirage": 85}, "form": "up"},
+        "Virtus.pro": {"base_rating": 86, "maps": {"Ancient": 88, "Overpass": 84}, "form": "stable"},
+        "Complexity": {"base_rating": 83, "maps": {"Mirage": 82, "Vertigo": 80}, "form": "stable"},
+        "Eternal Fire": {"base_rating": 80, "maps": {"Inferno": 83, "Nuke": 79}, "form": "up"},
     }
     
     @classmethod
@@ -357,8 +355,12 @@ class SmartFallbackAnalyzer:
         rating1 = team1_data["base_rating"] * form_multiplier[team1_data.get("form", "stable")]
         rating2 = team2_data["base_rating"] * form_multiplier[team2_data.get("form", "stable")]
         
+        # Случайные вариации для реалистичности
+        rating1 += random.uniform(-3, 3)
+        rating2 += random.uniform(-3, 3)
+        
         # Турнирная корректировка
-        if "major" in tournament.lower():
+        if "major" in tournament.lower() or "blast" in tournament.lower() or "esl" in tournament.lower():
             rating1 *= 1.05
             rating2 *= 1.05
         
@@ -367,7 +369,7 @@ class SmartFallbackAnalyzer:
         prob1 = (rating1 / total) * 100
         prob2 = (rating2 / total) * 100
         
-        winner = team1_norm if prob1 > prob2 else team2_norm
+        winner = team1 if prob1 > prob2 else team2
         confidence = abs(prob1 - prob2)
         
         # Прогноз счета
@@ -386,18 +388,22 @@ class SmartFallbackAnalyzer:
         else:
             risk = "HIGH"
         
+        # Определяем сильные/слабые стороны
+        strengths1 = cls._get_strengths(team1_norm)
+        strengths2 = cls._get_strengths(team2_norm)
+        
         return {
             "team1_analysis": {
                 "strength": round(rating1),
                 "current_form": team1_data.get("form", "stable"),
-                "key_strengths": ["Опыт на крупных турнирах", "Стабильный состав"],
-                "weaknesses": ["Требуется детальный анализ"]
+                "key_strengths": strengths1,
+                "weaknesses": ["Нестабильность в критические моменты", "Ограниченный пул карт"]
             },
             "team2_analysis": {
                 "strength": round(rating2),
                 "current_form": team2_data.get("form", "stable"),
-                "key_strengths": ["Молодая и агрессивная команда", "Хорошая подготовка"],
-                "weaknesses": ["Требуется детальный анализ"]
+                "key_strengths": strengths2,
+                "weaknesses": ["Проблемы с психологией", "Слабая адаптация к противнику"]
             },
             "match_prediction": {
                 "likely_winner": winner,
@@ -407,18 +413,20 @@ class SmartFallbackAnalyzer:
                 "risk_level": risk
             },
             "key_factors": [
-                "Разница в рейтинге команд",
-                "Текущая форма",
-                "Турнирная мотивация"
+                f"Разница в рейтинге: {abs(rating1 - rating2):.1f} пунктов",
+                f"Текущая форма команд ({team1_data.get('form', 'stable')} vs {team2_data.get('form', 'stable')})",
+                "Мотивация в турнире",
+                "Тактическая подготовка",
+                "Индивидуальная форма ключевых игроков"
             ],
             "recommended_bets": [
                 {
-                    "type": "Победа " + winner,
-                    "reason": f"Вероятность победы {max(prob1, prob2):.1f}%",
+                    "type": f"Победа {winner}",
+                    "reason": f"Вероятность победы {max(prob1, prob2):.1f}% при риске {risk}",
                     "confidence": "MEDIUM" if confidence > 25 else "LOW"
                 }
             ],
-            "detailed_analysis": f"Анализ на основе базовой статистики команд. Для точного прогноза активируйте DeepSeek нейросеть.",
+            "detailed_analysis": f"На основе базового анализа, {winner} имеет преимущество над соперником с вероятностью {max(prob1, prob2):.1f}%. Ключевыми факторами станут форма команд и тактическая подготовка. {f'Турнир {tournament} добавляет дополнительную мотивацию обеим командам.' if tournament else ''}",
             "source": "SMART FALLBACK",
             "model": "knowledge-base",
             "analysis_time": datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -436,21 +444,48 @@ class SmartFallbackAnalyzer:
             if known_team.lower() in team_lower:
                 return known_team
         
-        # Проверка акронимов
-        if "navi" in team_lower or "natus" in team_lower:
-            return "NAVI"
-        elif "vitality" in team_lower or "vita" in team_lower:
-            return "Vitality"
-        elif "faze" in team_lower:
-            return "FaZe"
-        elif "g2" in team_lower:
-            return "G2"
-        elif "spirit" in team_lower:
-            return "Spirit"
-        elif "cloud9" in team_lower or "c9" in team_lower:
-            return "Cloud9"
+        # Проверка акронимов и альтернативных названий
+        name_mapping = {
+            "navi": "NAVI", "natus": "NAVI", "vincere": "NAVI",
+            "vitality": "Vitality", "vita": "Vitality",
+            "faze": "FaZe", "faze clan": "FaZe",
+            "g2": "G2", "g2 esports": "G2",
+            "spirit": "Spirit", "team spirit": "Spirit",
+            "cloud9": "Cloud9", "c9": "Cloud9",
+            "liquid": "Liquid", "team liquid": "Liquid",
+            "heroic": "Heroic",
+            "astralis": "Astralis",
+            "ence": "ENCE",
+            "furia": "FURIA", "furia esports": "FURIA",
+            "mouz": "MOUZ", "mousesports": "MOUZ",
+            "virtus.pro": "Virtus.pro", "vp": "Virtus.pro",
+            "complexity": "Complexity", "col": "Complexity",
+            "eternal fire": "Eternal Fire", "ef": "Eternal Fire"
+        }
+        
+        for key, value in name_mapping.items():
+            if key in team_lower:
+                return value
         
         return team_name
+    
+    @staticmethod
+    def _get_strengths(team_name: str) -> List[str]:
+        """Получить сильные стороны команды"""
+        strengths_map = {
+            "NAVI": ["Индивидуальное мастерство", "Классные снайперы", "Большой опыт"],
+            "Vitality": ["Тактическая дисциплина", "Звездный игрок ZywOo", "Стойкость в сложных ситуациях"],
+            "FaZe": ["Агрессивный стиль", "Опыт на крупных турнирах", "Хорошая координация"],
+            "G2": ["Индивидуальный навык", "Мотивация в важных матчах", "Разнообразный пул карт"],
+            "Spirit": ["Молодая энергия", "Нестандартные тактики", "Хорошая форма"],
+            "Cloud9": ["Стабильность", "Командная игра", "Опытный капитан"],
+            "Liquid": ["Быстрая игра", "Хорошая карта Mirage", "Мотивация в NA регионе"],
+            "Heroic": ["Тактическая глубина", "Строгая дисциплина", "Хорошая подготовка"],
+            "Astralis": ["Легендарный опыт", "Тактические инновации", "Психологическая устойчивость"],
+            "ENCE": ["Финская дисциплина", "Хорошая игра на Ancient", "Командная химия"],
+        }
+        
+        return strengths_map.get(team_name, ["Командная игра", "Тактическая подготовка", "Опыт игроков"])
 
 # ========== ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ ==========
 panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
@@ -497,6 +532,12 @@ def get_team_emoji(team_name: str) -> str:
         return "⭐"
     elif "ence" in team_lower:
         return "🇫🇮"
+    elif "furia" in team_lower:
+        return "🐆"
+    elif "mouz" in team_lower:
+        return "🐭"
+    elif "virtus" in team_lower:
+        return "🐻"
     
     return "🎮"
 
@@ -588,7 +629,7 @@ async def cmd_start(message: types.Message):
 • 📈 Дает точные прогнозы и рекомендации
 • ⚡ Быстрые и детальные отчеты
 
-{"⚠️ <b>ВНИМАНИЕ:</b> Для полного функционала добавьте DEEPSEEK_API_KEY в файл .env" if not neural_network.active else "✅ <b>Нейросеть готова к работе!</b>"}
+{"⚠️ <b>ВНИМАНИЕ:</b> Для полного функционала добавьте DEEPSEEK_API_KEY" if not neural_network.active else "✅ <b>Нейросеть готова к работе!</b>"}
 
 👇 <b>Выберите раздел:</b>
 """
@@ -833,7 +874,7 @@ async def handle_neural_analysis(callback: types.CallbackQuery):
     time_str = format_match_time(match.get("scheduled_at", ""))
     
     # Показываем статус анализа
-    status_msg = await callback.message.edit_text(
+    await callback.message.edit_text(
         f"🧠 <b>АНАЛИЗ МАТЧА НЕЙРОСЕТЬЮ</b>\n\n"
         f"🏆 {team1_name} vs {team2_name}\n"
         f"⏰ {time_str} MSK | 🏆 {tournament}\n\n"
@@ -1016,7 +1057,7 @@ async def handle_settings(callback: types.CallbackQuery):
         f"",
         f"🔧 <b>Как активировать нейросеть:</b>",
         f"1. Получите API ключ на https://platform.deepseek.com",
-        f"2. Добавьте в Railway переменную DEEPSEEK_API_KEY",
+        f"2. Добавьте в Railway Variables: DEEPSEEK_API_KEY",
         f"3. Перезапустите приложение",
         f"",
         f"💡 <b>Преимущества нейросети:</b>",
@@ -1044,24 +1085,35 @@ async def handle_settings(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "check_status")
 async def handle_check_status(callback: types.CallbackQuery):
     """Проверка статуса нейросети"""
-    # Обновляем статус
-    if DEEPSEEK_API_KEY and DEEPSEEK_AVAILABLE:
-        try:
-            # Быстрая проверка соединения
-            neural_network.active = True
-            status = "✅ АКТИВНА"
-            message = "Нейросеть подключена и готова к работе!"
-        except:
-            neural_network.active = False
-            status = "❌ ОШИБКА ПОДКЛЮЧЕНИЯ"
-            message = "Проверьте API ключ и интернет соединение"
-    else:
-        neural_network.active = False
-        status = "❌ НЕ АКТИВНА"
-        message = "Добавьте DEEPSEEK_API_KEY в Railway Variables"
+    # Переинициализируем нейросеть для проверки
+    neural_network.__init__()
     
-    await callback.answer(f"Статус: {status}")
-    await handle_settings(callback)
+    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
+    await callback.answer(f"Статус: {neural_status}")
+    
+    # Обновляем сообщение с настройками
+    lines = [
+        "⚙️ <b>НАСТРОЙКИ БОТА</b>",
+        "",
+        f"🤖 <b>Нейросеть DeepSeek:</b> {neural_status}",
+        f"📊 <b>Источник матчей:</b> PandaScore API",
+        f"⏱️ <b>Часовой пояс:</b> MSK (UTC+3)",
+        f"",
+        f"🔄 <b>Статус проверен:</b> {datetime.now().strftime('%H:%M:%S')}",
+        f"",
+        f"{'✅ Нейросеть успешно подключена!' if neural_network.active else '❌ Нейросеть недоступна. Проверьте DEEPSEEK_API_KEY'}",
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 ПРОВЕРИТЬ СТАТУС", callback_data="check_status")],
+        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=keyboard,
+        disable_web_page_preview=True
+    )
 
 @dp.callback_query(F.data == "help")
 async def handle_help(callback: types.CallbackQuery):
@@ -1102,7 +1154,7 @@ async def handle_help(callback: types.CallbackQuery):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚙️ НАСТРОЙКИ", callback_data="settings")],
-        [InlineKeyboardButton(text="🏠 В МЕНУ", callback_data="back")]
+        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
     ])
     
     await callback.message.edit_text(
@@ -1115,7 +1167,8 @@ async def handle_help(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "back")
 async def handle_back(callback: types.CallbackQuery):
     """Назад в главное меню"""
-    await cmd_start(callback.message)
+    if callback.message:
+        await cmd_start(callback.message)
     await callback.answer()
 
 # ========== КОМАНДЫ ==========
@@ -1124,14 +1177,24 @@ async def cmd_status(message: types.Message):
     """Проверка статуса"""
     neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
     
-    await message.answer(
+    status_text = (
         f"🤖 <b>СТАТУС СИСТЕМЫ</b>\n\n"
         f"• Нейросеть DeepSeek: {neural_status}\n"
         f"• API PandaScore: {'✅' if PANDASCORE_TOKEN else '❌'}\n"
         f"• Бот Telegram: ✅\n"
-        f"• Время сервера: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-        f"{'🧠 Нейросеть готова к анализу!' if neural_network.active else '⚠️ Для активации нейросети добавьте DEEPSEEK_API_KEY в Railway Variables'}"
+        f"• Время сервера: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}\n\n"
     )
+    
+    if neural_network.active:
+        status_text += "🧠 <b>Нейросеть готова к анализу!</b>\n"
+        status_text += "Используйте /analyze команду для быстрого анализа"
+    else:
+        status_text += "⚠️ <b>Для активации нейросети:</b>\n"
+        status_text += "1. Получите ключ на platform.deepseek.com\n"
+        status_text += "2. Добавьте DEEPSEEK_API_KEY в Railway Variables\n"
+        status_text += "3. Перезапустите приложение"
+    
+    await message.answer(status_text)
 
 @dp.message(Command("analyze"))
 async def cmd_analyze(message: types.Message):
@@ -1148,14 +1211,14 @@ async def cmd_analyze(message: types.Message):
     team2 = args[2]
     tournament = " ".join(args[3:]) if len(args) > 3 else ""
     
-    await message.answer(f"🧠 <b>Анализирую матч: {team1} vs {team2}...</b>")
+    status_msg = await message.answer(f"🧠 <b>Анализирую матч: {team1} vs {team2}...</b>")
     
     if neural_network.active:
         analysis = await neural_network.analyze_match(team1, team2, tournament)
-        source = "DeepSeek AI"
+        source = "🧠 DeepSeek AI"
     else:
         analysis = SmartFallbackAnalyzer.analyze(team1, team2, tournament)
-        source = "Умный анализ"
+        source = "📊 Умный анализ"
     
     prediction = analysis.get("match_prediction", {})
     
@@ -1171,33 +1234,56 @@ async def cmd_analyze(message: types.Message):
         f"⚠️ <i>Анализ основан на {source.lower()}</i>"
     )
     
-    await message.answer(result)
+    await status_msg.edit_text(result)
+
+@dp.message(Command("test"))
+async def cmd_test(message: types.Message):
+    """Тестовая команда"""
+    await message.answer(
+        f"🤖 <b>Тест системы</b>\n\n"
+        f"• Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+        f"• Нейросеть: {'✅ АКТИВНА' if neural_network.active else '❌ НЕ АКТИВНА'}\n"
+        f"• PandaScore: {'✅' if PANDASCORE_TOKEN else '❌'}\n"
+        f"• Bot: ✅ Работает\n"
+        f"• Версия: CS2 Neural Analyst v1.0"
+    )
 
 # ========== ЗАПУСК БОТА ==========
 
 async def main():
     """Запуск бота"""
-    logger.info("🎮 Запускаю CS2 NEURAL ANALYST...")
+    logger.info("=" * 50)
+    logger.info("🎮 ЗАПУСК CS2 NEURAL ANALYST")
+    logger.info("=" * 50)
+    
+    # Проверка конфигурации
     logger.info(f"🤖 DeepSeek статус: {'✅ АКТИВНА' if neural_network.active else '❌ НЕ АКТИВНА'}")
-    logger.info("📊 PandaScore API: подключен")
+    logger.info(f"📊 PandaScore API: {'✅' if PANDASCORE_TOKEN else '❌'}")
+    logger.info(f"🔑 Telegram Bot: {'✅' if TELEGRAM_BOT_TOKEN else '❌'}")
     logger.info("⏱️ Часовой пояс: MSK (UTC+3)")
     
     if not PANDASCORE_TOKEN:
-        logger.error("❌ Нет токена PandaScore! Добавьте в Railway Variables")
+        logger.error("❌ Нет токена PandaScore! Добавьте PANDASCORE_TOKEN в Railway Variables")
         return
     
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ Нет токена Telegram! Добавьте в Railway Variables")
+        logger.error("❌ Нет токена Telegram! Добавьте TELEGRAM_BOT_TOKEN в Railway Variables")
         return
     
     if not neural_network.active:
         logger.warning("⚠️ DeepSeek не активирован. Использую fallback анализ.")
         logger.info("💡 Для активации добавьте DEEPSEEK_API_KEY в Railway Variables")
+    else:
+        logger.info("✅ Нейросеть готова к работе!")
     
     try:
+        logger.info("🚀 Запускаю бота...")
         await dp.start_polling(bot, skip_updates=True)
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска бота: {e}")
     finally:
         await panda_api.close()
+        logger.info("🛑 Бот остановлен")
 
 if __name__ == "__main__":
     asyncio.run(main())
