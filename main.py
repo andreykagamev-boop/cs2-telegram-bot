@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import json
-import random
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import aiohttp
@@ -38,7 +37,7 @@ try:
     logger.info("✅ OpenAI/DeepSeek библиотека доступна")
 except ImportError:
     DEEPSEEK_AVAILABLE = False
-    logger.warning("❌ OpenAI библиотека не установлена. Использую локальную логику")
+    logger.warning("❌ OpenAI библиотека не установлена")
 
 class DeepSeekNeuralNetwork:
     """Настоящая нейросеть DeepSeek для анализа CS2 матчей"""
@@ -46,9 +45,11 @@ class DeepSeekNeuralNetwork:
     def __init__(self):
         self.active = False
         
+        logger.info("🧠 Инициализация нейросети DeepSeek...")
+        
         if DEEPSEEK_AVAILABLE and DEEPSEEK_API_KEY:
             try:
-                # ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ - без лишних параметров
+                # Создаем клиент DeepSeek
                 self.client = AsyncOpenAI(
                     api_key=DEEPSEEK_API_KEY,
                     base_url="https://api.deepseek.com"
@@ -60,7 +61,7 @@ class DeepSeekNeuralNetwork:
                 self.active = False
         else:
             if not DEEPSEEK_AVAILABLE:
-                logger.warning("⚠️ Библиотека openai не установлена. Установите: pip install openai")
+                logger.warning("⚠️ Библиотека openai не установлена")
             if not DEEPSEEK_API_KEY:
                 logger.warning("⚠️ DEEPSEEK_API_KEY не найден")
             self.active = False
@@ -70,112 +71,105 @@ class DeepSeekNeuralNetwork:
         """Анализ матча настоящей нейросетью DeepSeek"""
         
         if not self.active:
-            logger.info("DeepSeek не активен, использую локальную логику")
-            return self._fallback_analysis(team1, team2, tournament)
+            raise Exception("Нейросеть не активирована. Проверьте DEEPSEEK_API_KEY")
         
         try:
-            # Строим промпт для анализа
-            prompt = self._build_analysis_prompt(team1, team2, tournament, match_time)
+            # Строим промпт для анализа в стиле БАРА
+            prompt = self._build_bar_analysis_prompt(team1, team2, tournament, match_time)
             
-            logger.info(f"🤖 Отправляю запрос к DeepSeek нейросети: {team1} vs {team2}")
+            logger.info(f"🍺 Бармен анализирует матч: {team1} vs {team2}")
             
-            # Запрос к нейросети с обработкой таймаута
-            try:
-                response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
-                        model="deepseek-chat",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": """Ты профессиональный аналитик киберспорта Counter-Strike 2. 
-                                Анализируй матчи на основе статистики, формы команд, состава и тактики.
-                                Отвечай строго в JSON формате."""
-                            },
-                            {"role": "user", "content": prompt}
-                        ],
-                        temperature=0.3,
-                        max_tokens=2000,
-                        response_format={"type": "json_object"}
-                    ),
-                    timeout=30.0
-                )
-                
-                # Парсинг ответа
-                result = json.loads(response.choices[0].message.content)
-                logger.info(f"✅ DeepSeek вернул анализ для {team1} vs {team2}")
-                
-                # Обогащаем результат
-                result["source"] = "DeepSeek AI"
-                result["model"] = "deepseek-chat"
-                result["analysis_time"] = datetime.now().strftime("%d.%m.%Y %H:%M")
-                
-                return result
-                
-            except asyncio.TimeoutError:
-                logger.error("❌ Таймаут запроса к DeepSeek API")
-                return self._fallback_analysis(team1, team2, tournament)
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Ошибка парсинга JSON от DeepSeek: {e}")
-                return self._fallback_analysis(team1, team2, tournament)
+            # Запрос к нейросети
+            response = await self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": """Ты опытный бармен и аналитик киберспорта. Ты работаешь в CS2-баре и даешь 
+                        экспертные прогнозы на матчи. Твои анализы всегда точные, с юмором и в стиле бара. 
+                        Отвечай строго в JSON формате."""
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,  # Немного креативности для бара
+                max_tokens=2000,
+                response_format={"type": "json_object"}
+            )
             
+            # Парсинг ответа
+            result = json.loads(response.choices[0].message.content)
+            logger.info(f"✅ Бармен завершил анализ")
+            
+            # Добавляем метаданные
+            result["source"] = "Барный аналитик DeepSeek"
+            result["analysis_time"] = datetime.now().strftime("%d.%m.%Y %H:%M")
+            result["bar_name"] = "CS2 Бар 'HeadShot'"
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            raise Exception("🕐 Бармен слишком занят, попробуйте позже")
+        except json.JSONDecodeError as e:
+            raise Exception("🍻 Бармен перебрал и написал неразборчиво")
         except Exception as e:
-            logger.error(f"❌ Ошибка DeepSeek API: {str(e)[:200]}")
-            return self._fallback_analysis(team1, team2, tournament)
+            raise Exception(f"🍺 Ошибка в баре: {str(e)}")
     
-    def _build_analysis_prompt(self, team1: str, team2: str, tournament: str, 
-                             match_time: str) -> str:
-        """Построение промпта для анализа"""
+    def _build_bar_analysis_prompt(self, team1: str, team2: str, tournament: str, 
+                                 match_time: str) -> str:
+        """Построение промпта для анализа в стиле БАРА"""
         return f"""
-Проанализируй предстоящий матч CS2 между {team1} и {team2}.
+        Дорогой бармен-аналитик!
 
-Турнир: {tournament if tournament else 'Не указан'}
-Время матча: {match_time if match_time else 'Не указано'}
-Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}
-
-Проанализируй:
-1. Текущую форму команд
-2. Статистику последних встреч
-3. Составы команд
-4. Тактические особенности
-5. Мотивацию в турнире
-
-Предоставь прогноз в следующем JSON формате:
-{{
-  "team1_analysis": {{
-    "strength": "число от 0 до 100",
-    "current_form": "краткое описание",
-    "key_strengths": ["сила1", "сила2"],
-    "weaknesses": ["слабость1", "слабость2"]
-  }},
-  "team2_analysis": {{ ... }},
-  "match_prediction": {{
-    "likely_winner": "{team1} или {team2}",
-    "probability": "число от 0 до 100",
-    "score_prediction": "2:0, 2:1, 1:2, 0:2",
-    "confidence": "число от 0 до 100",
-    "risk_level": "LOW/MEDIUM/HIGH"
-  }},
-  "key_factors": ["фактор1", "фактор2", "фактор3"],
-  "recommended_bets": [
-    {{
-      "type": "тип ставки",
-      "reason": "обоснование",
-      "confidence": "LOW/MEDIUM/HIGH"
-    }}
-  ],
-  "detailed_analysis": "развернутый анализ на 3-5 предложений"
-}}
-
-Будь максимально точным и реалистичным!
-"""
-    
-    def _fallback_analysis(self, team1: str, team2: str, tournament: str) -> Dict:
-        """Fallback анализ когда DeepSeek недоступен"""
-        logger.info(f"Использую fallback анализ для {team1} vs {team2}")
+        У нас в баре "HeadShot" спорят о предстоящем матче CS2.
         
-        return SmartFallbackAnalyzer.analyze(team1, team2, tournament)
+        🎯 МАТЧ: {team1} vs {team2}
+        🏆 ТУРНИР: {tournament if tournament else 'Обычная вечеринка'}
+        🕐 ВРЕМЯ: {match_time if match_time else 'Когда бар будет полон'}
+        
+        Как опытный бармен и знаток CS2, проанализируй этот матч и дай:
+        1. Силу команд (сколько "кружек пива" каждая команда заслуживает)
+        2. Прогноз победителя и счета
+        3. Ключевые моменты матча
+        4. Рекомендации по ставкам (какой "коктейль" выбрать)
+        5. Забавный анализ в стиле бара
+        
+        Верни ответ в следующем JSON формате:
+        {{
+          "bar_intro": "забавное вступление о матче в стиле бара",
+          "team1_analysis": {{
+            "strength": "число от 0 до 100 (сколько кружек пива)",
+            "current_form": "описание формы в стиле бара",
+            "key_strengths": ["сильные стороны как у напитков"],
+            "weaknesses": ["слабые стороны как у плохого пива"],
+            "bar_nickname": "забавное прозвище команды в баре"
+          }},
+          "team2_analysis": {{ ... }},
+          "match_prediction": {{
+            "likely_winner": "название команды",
+            "probability": "число от 0 до 100",
+            "score_prediction": "2:0, 2:1 и т.д.",
+            "confidence": "число от 0 до 100 (уверенность бармена)",
+            "risk_level": "LOW/MEDIUM/HIGH (риск как у напитков)",
+            "bar_metaphor": "сравнение матча с коктейлем"
+          }},
+          "key_factors": ["ключевые моменты в стиле бара", "еще момент"],
+          "recommended_bets": [
+            {{
+              "type": "тип ставки (например: П1, Тотал)",
+              "reason": "обоснование в стиле бара",
+              "confidence": "LOW/MEDIUM/HIGH",
+              "bar_drink": "рекомендуемый напиток для этой ставки"
+            }}
+          ],
+          "detailed_analysis": "развернутый анализ на 3-5 предложений в стиле бара",
+          "bar_tip": "совет бармена на матч",
+          "funny_comment": "забавный комментарий о матче"
+        }}
+        
+        Будь креативным, забавным и точным! Добавь барного юмора!
+        """
 
-# ========== УЛУЧШЕННЫЙ ПАРСИНГ МАТЧЕЙ ==========
+# ========== ПАРСИНГ МАТЧЕЙ ==========
 class PandaScoreAPI:
     """API клиент для CS2"""
     
@@ -202,12 +196,9 @@ class PandaScoreAPI:
             today = datetime.utcnow().date()
             tomorrow = today + timedelta(days=1)
             
-            today_str = today.isoformat()
-            tomorrow_str = tomorrow.isoformat()
-            
             url = f"{self.base_url}/csgo/matches"
             params = {
-                "range[scheduled_at]": f"{today_str},{tomorrow_str}",
+                "range[scheduled_at]": f"{today.isoformat()},{tomorrow.isoformat()}",
                 "per_page": 50,
                 "sort": "scheduled_at",
                 "filter[status]": "not_started,running"
@@ -233,14 +224,14 @@ class PandaScoreAPI:
                             except:
                                 continue
                     
-                    logger.info(f"Найдено матчей на сегодня: {len(today_matches)}")
+                    logger.info(f"🍺 Найдено матчей на сегодня: {len(today_matches)}")
                     return today_matches
                 else:
                     logger.error(f"API error: {response.status}")
                     return []
                     
         except Exception as e:
-            logger.error(f"Ошибка при получении сегодняшних матчей: {e}")
+            logger.error(f"🍻 Ошибка при получении матчей: {e}")
             return []
     
     async def get_tomorrow_matches(self):
@@ -252,12 +243,9 @@ class PandaScoreAPI:
             tomorrow = today + timedelta(days=1)
             day_after = today + timedelta(days=2)
             
-            tomorrow_str = tomorrow.isoformat()
-            day_after_str = day_after.isoformat()
-            
             url = f"{self.base_url}/csgo/matches"
             params = {
-                "range[scheduled_at]": f"{tomorrow_str},{day_after_str}",
+                "range[scheduled_at]": f"{tomorrow.isoformat()},{day_after.isoformat()}",
                 "per_page": 50,
                 "sort": "scheduled_at",
                 "filter[status]": "not_started"
@@ -282,13 +270,13 @@ class PandaScoreAPI:
                             except:
                                 continue
                     
-                    logger.info(f"Найдено матчей на завтра: {len(tomorrow_matches)}")
+                    logger.info(f"🍺 Найдено матчей на завтра: {len(tomorrow_matches)}")
                     return tomorrow_matches
                 else:
                     return []
                     
         except Exception as e:
-            logger.error(f"Ошибка при получении завтрашних матчей: {e}")
+            logger.error(f"🍻 Ошибка: {e}")
             return []
     
     async def get_live_matches(self):
@@ -305,191 +293,18 @@ class PandaScoreAPI:
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     matches = await response.json()
-                    logger.info(f"Найдено live матчей: {len(matches)}")
+                    logger.info(f"🔥 Найдено live матчей: {len(matches)}")
                     return matches
                 else:
                     return []
                     
         except Exception as e:
-            logger.error(f"Ошибка при получении live матчей: {e}")
+            logger.error(f"🍻 Ошибка: {e}")
             return []
     
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
-
-# ========== УМНАЯ ЛОГИКА ДЛЯ FALLBACK ==========
-class SmartFallbackAnalyzer:
-    """Умный fallback анализатор когда DeepSeek недоступен"""
-    
-    TEAM_KNOWLEDGE = {
-        "NAVI": {"base_rating": 92, "maps": {"Mirage": 85, "Inferno": 80}, "form": "up"},
-        "Vitality": {"base_rating": 95, "maps": {"Mirage": 90, "Ancient": 88}, "form": "up"},
-        "FaZe": {"base_rating": 90, "maps": {"Mirage": 88, "Overpass": 85}, "form": "stable"},
-        "G2": {"base_rating": 88, "maps": {"Mirage": 85, "Vertigo": 90}, "form": "down"},
-        "Spirit": {"base_rating": 89, "maps": {"Inferno": 88, "Nuke": 85}, "form": "up"},
-        "Cloud9": {"base_rating": 85, "maps": {"Inferno": 85, "Ancient": 78}, "form": "stable"},
-        "Liquid": {"base_rating": 84, "maps": {"Mirage": 78, "Overpass": 80}, "form": "down"},
-        "Heroic": {"base_rating": 86, "maps": {"Mirage": 85, "Vertigo": 82}, "form": "stable"},
-        "Astralis": {"base_rating": 83, "maps": {"Inferno": 85, "Nuke": 88}, "form": "up"},
-        "ENCE": {"base_rating": 82, "maps": {"Ancient": 85, "Mirage": 80}, "form": "stable"},
-        "FURIA": {"base_rating": 81, "maps": {"Vertigo": 85, "Nuke": 78}, "form": "up"},
-        "MOUZ": {"base_rating": 87, "maps": {"Inferno": 88, "Mirage": 85}, "form": "up"},
-        "Virtus.pro": {"base_rating": 86, "maps": {"Ancient": 88, "Overpass": 84}, "form": "stable"},
-        "Complexity": {"base_rating": 83, "maps": {"Mirage": 82, "Vertigo": 80}, "form": "stable"},
-        "Eternal Fire": {"base_rating": 80, "maps": {"Inferno": 83, "Nuke": 79}, "form": "up"},
-    }
-    
-    @classmethod
-    def analyze(cls, team1: str, team2: str, tournament: str = "") -> Dict:
-        """Умный fallback анализ"""
-        team1_norm = cls._normalize_name(team1)
-        team2_norm = cls._normalize_name(team2)
-        
-        # Получаем данные команд
-        team1_data = cls.TEAM_KNOWLEDGE.get(team1_norm, {"base_rating": 75, "form": "stable"})
-        team2_data = cls.TEAM_KNOWLEDGE.get(team2_norm, {"base_rating": 75, "form": "stable"})
-        
-        # Корректировка рейтинга на основе формы
-        form_multiplier = {"up": 1.1, "stable": 1.0, "down": 0.9}
-        rating1 = team1_data["base_rating"] * form_multiplier[team1_data.get("form", "stable")]
-        rating2 = team2_data["base_rating"] * form_multiplier[team2_data.get("form", "stable")]
-        
-        # Случайные вариации для реалистичности
-        rating1 += random.uniform(-3, 3)
-        rating2 += random.uniform(-3, 3)
-        
-        # Турнирная корректировка
-        if "major" in tournament.lower() or "blast" in tournament.lower() or "esl" in tournament.lower():
-            rating1 *= 1.05
-            rating2 *= 1.05
-        
-        # Расчет вероятностей
-        total = rating1 + rating2
-        prob1 = (rating1 / total) * 100
-        prob2 = (rating2 / total) * 100
-        
-        winner = team1 if prob1 > prob2 else team2
-        confidence = abs(prob1 - prob2)
-        
-        # Прогноз счета
-        if confidence > 35:
-            score = "2:0"
-        elif confidence > 20:
-            score = "2:1"
-        else:
-            score = random.choice(["2:1", "1:2"])
-        
-        # Уровень риска
-        if confidence > 40:
-            risk = "LOW"
-        elif confidence > 25:
-            risk = "MEDIUM"
-        else:
-            risk = "HIGH"
-        
-        # Определяем сильные/слабые стороны
-        strengths1 = cls._get_strengths(team1_norm)
-        strengths2 = cls._get_strengths(team2_norm)
-        
-        return {
-            "team1_analysis": {
-                "strength": round(rating1),
-                "current_form": team1_data.get("form", "stable"),
-                "key_strengths": strengths1,
-                "weaknesses": ["Нестабильность в критические моменты", "Ограниченный пул карт"]
-            },
-            "team2_analysis": {
-                "strength": round(rating2),
-                "current_form": team2_data.get("form", "stable"),
-                "key_strengths": strengths2,
-                "weaknesses": ["Проблемы с психологией", "Слабая адаптация к противнику"]
-            },
-            "match_prediction": {
-                "likely_winner": winner,
-                "probability": round(max(prob1, prob2), 1),
-                "score_prediction": score,
-                "confidence": round(confidence, 1),
-                "risk_level": risk
-            },
-            "key_factors": [
-                f"Разница в рейтинге: {abs(rating1 - rating2):.1f} пунктов",
-                f"Текущая форма команд ({team1_data.get('form', 'stable')} vs {team2_data.get('form', 'stable')})",
-                "Мотивация в турнире",
-                "Тактическая подготовка",
-                "Индивидуальная форма ключевых игроков"
-            ],
-            "recommended_bets": [
-                {
-                    "type": f"Победа {winner}",
-                    "reason": f"Вероятность победы {max(prob1, prob2):.1f}% при риске {risk}",
-                    "confidence": "MEDIUM" if confidence > 25 else "LOW"
-                }
-            ],
-            "detailed_analysis": f"На основе базового анализа, {winner} имеет преимущество над соперником с вероятностью {max(prob1, prob2):.1f}%. Ключевыми факторами станут форма команд и тактическая подготовка. {f'Турнир {tournament} добавляет дополнительную мотивацию обеим командам.' if tournament else ''}",
-            "source": "SMART FALLBACK",
-            "model": "knowledge-base",
-            "analysis_time": datetime.now().strftime("%d.%m.%Y %H:%M")
-        }
-    
-    @staticmethod
-    def _normalize_name(team_name: str) -> str:
-        """Нормализация имени команды"""
-        if not team_name:
-            return "Unknown"
-        
-        team_lower = team_name.lower()
-        
-        for known_team in SmartFallbackAnalyzer.TEAM_KNOWLEDGE.keys():
-            if known_team.lower() in team_lower:
-                return known_team
-        
-        # Проверка акронимов и альтернативных названий
-        name_mapping = {
-            "navi": "NAVI", "natus": "NAVI", "vincere": "NAVI",
-            "vitality": "Vitality", "vita": "Vitality",
-            "faze": "FaZe", "faze clan": "FaZe",
-            "g2": "G2", "g2 esports": "G2",
-            "spirit": "Spirit", "team spirit": "Spirit",
-            "cloud9": "Cloud9", "c9": "Cloud9",
-            "liquid": "Liquid", "team liquid": "Liquid",
-            "heroic": "Heroic",
-            "astralis": "Astralis",
-            "ence": "ENCE",
-            "furia": "FURIA", "furia esports": "FURIA",
-            "mouz": "MOUZ", "mousesports": "MOUZ",
-            "virtus.pro": "Virtus.pro", "vp": "Virtus.pro",
-            "complexity": "Complexity", "col": "Complexity",
-            "eternal fire": "Eternal Fire", "ef": "Eternal Fire"
-        }
-        
-        for key, value in name_mapping.items():
-            if key in team_lower:
-                return value
-        
-        return team_name
-    
-    @staticmethod
-    def _get_strengths(team_name: str) -> List[str]:
-        """Получить сильные стороны команды"""
-        strengths_map = {
-            "NAVI": ["Индивидуальное мастерство", "Классные снайперы", "Большой опыт"],
-            "Vitality": ["Тактическая дисциплина", "Звездный игрок ZywOo", "Стойкость в сложных ситуациях"],
-            "FaZe": ["Агрессивный стиль", "Опыт на крупных турнирах", "Хорошая координация"],
-            "G2": ["Индивидуальный навык", "Мотивация в важных матчах", "Разнообразный пул карт"],
-            "Spirit": ["Молодая энергия", "Нестандартные тактики", "Хорошая форма"],
-            "Cloud9": ["Стабильность", "Командная игра", "Опытный капитан"],
-            "Liquid": ["Быстрая игра", "Хорошая карта Mirage", "Мотивация в NA регионе"],
-            "Heroic": ["Тактическая глубина", "Строгая дисциплина", "Хорошая подготовка"],
-            "Astralis": ["Легендарный опыт", "Тактические инновации", "Психологическая устойчивость"],
-            "ENCE": ["Финская дисциплина", "Хорошая игра на Ancient", "Командная химия"],
-        }
-        
-        return strengths_map.get(team_name, ["Командная игра", "Тактическая подготовка", "Опыт игроков"])
-
-# ========== ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ ==========
-panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
-neural_network = DeepSeekNeuralNetwork()
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def format_match_time(scheduled_at: str) -> str:
@@ -508,7 +323,7 @@ def format_match_time(scheduled_at: str) -> str:
 def get_team_emoji(team_name: str) -> str:
     """Эмодзи для команд"""
     if not team_name:
-        return "🎮"
+        return "🍺"
     
     team_lower = team_name.lower()
     
@@ -536,26 +351,52 @@ def get_team_emoji(team_name: str) -> str:
         return "🐆"
     elif "mouz" in team_lower:
         return "🐭"
-    elif "virtus" in team_lower:
-        return "🐻"
     
     return "🎮"
 
+def get_drink_emoji(drink_type: str) -> str:
+    """Эмодзи для напитков"""
+    drink_emojis = {
+        "пиво": "🍺",
+        "вино": "🍷",
+        "виски": "🥃",
+        "коктейль": "🍸",
+        "шампанское": "🍾",
+        "водка": "🥂",
+        "ром": "🏝️",
+        "джин": "🍶",
+        "текила": "🌵",
+        "кофе": "☕",
+        "чай": "🫖",
+        "энергетик": "⚡",
+        "смузи": "🥤",
+        "вода": "💧"
+    }
+    
+    for drink, emoji in drink_emojis.items():
+        if drink in drink_type.lower():
+            return emoji
+    
+    return "🥤"
+
 # ========== КЛАВИАТУРЫ ==========
 def create_main_keyboard():
-    """Главное меню"""
+    """Главное меню бара"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📅 МАТЧИ СЕГОДНЯ", callback_data="today"),
-            InlineKeyboardButton(text="📅 МАТЧИ ЗАВТРА", callback_data="tomorrow")
+            InlineKeyboardButton(text="🍺 МАТЧИ СЕГОДНЯ", callback_data="today"),
+            InlineKeyboardButton(text="🍻 МАТЧИ ЗАВТРА", callback_data="tomorrow")
         ],
         [
             InlineKeyboardButton(text="🔥 LIVE МАТЧИ", callback_data="live"),
-            InlineKeyboardButton(text="🤖 АНАЛИЗ НЕЙРОСЕТЬЮ", callback_data="analyze_neural")
+            InlineKeyboardButton(text="🎯 АНАЛИЗ ОТ БАРМЕНА", callback_data="analyze_bar")
         ],
         [
-            InlineKeyboardButton(text="⚙️ НАСТРОЙКИ", callback_data="settings"),
-            InlineKeyboardButton(text="ℹ️ ПОМОЩЬ", callback_data="help")
+            InlineKeyboardButton(text="⚙️ НАСТРОЙКИ БАРА", callback_data="settings"),
+            InlineKeyboardButton(text="ℹ️ О БАРЕ", callback_data="about")
+        ],
+        [
+            InlineKeyboardButton(text="🍸 ЗАКАЗАТЬ АНАЛИЗ", callback_data="custom_analysis")
         ]
     ])
     return keyboard
@@ -564,7 +405,7 @@ def create_match_selection_keyboard(matches: List[Dict], prefix: str = "analyze"
     """Клавиатура для выбора матча"""
     buttons = []
     
-    for i, match in enumerate(matches[:6]):  # Максимум 6 матчей
+    for i, match in enumerate(matches[:8]):  # Максимум 8 матчей
         opponents = match.get("opponents", [])
         if len(opponents) >= 2:
             team1 = opponents[0].get("opponent", {})
@@ -573,7 +414,7 @@ def create_match_selection_keyboard(matches: List[Dict], prefix: str = "analyze"
             team2_name = team2.get("acronym") or team2.get("name", "TBA")
             time_str = format_match_time(match.get("scheduled_at", ""))
             
-            button_text = f"{team1_name} vs {team2_name} ({time_str})"
+            button_text = f"{team1_name} 🆚 {team2_name} ({time_str})"
             if len(button_text) > 40:
                 button_text = button_text[:37] + "..."
             
@@ -582,56 +423,63 @@ def create_match_selection_keyboard(matches: List[Dict], prefix: str = "analyze"
                 callback_data=f"{prefix}_{i}"
             )])
     
-    buttons.append([InlineKeyboardButton(text="◀️ НАЗАД", callback_data="back")])
+    buttons.append([
+        InlineKeyboardButton(text="🍺 В БАР", callback_data="back"),
+        InlineKeyboardButton(text="🏠 ГЛАВНАЯ", callback_data="home")
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def create_analysis_keyboard(match_index: int, has_neural: bool = True):
+def create_analysis_keyboard(match_index: int):
     """Клавиатура для анализа матча"""
-    buttons = []
-    
-    if has_neural:
-        buttons.append([
-            InlineKeyboardButton(text="🧠 ДЕТАЛЬНЫЙ АНАЛИЗ", callback_data=f"full_analysis_{match_index}"),
-            InlineKeyboardButton(text="📊 ПРОГНОЗ СЧЕТА", callback_data=f"score_pred_{match_index}")
-        ])
-    
-    buttons.append([
-        InlineKeyboardButton(text="⚡ БЫСТРЫЙ ПРОГНОЗ", callback_data=f"quick_pred_{match_index}"),
-        InlineKeyboardButton(text="🎯 РЕКОМЕНДАЦИИ", callback_data=f"recommendations_{match_index}")
-    ])
-    
-    buttons.append([
-        InlineKeyboardButton(text="◀️ ВЫБРАТЬ ДРУГОЙ", callback_data="analyze_neural"),
-        InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")
-    ])
+    buttons = [
+        [
+            InlineKeyboardButton(text="🎯 ДЕТАЛЬНЫЙ АНАЛИЗ", callback_data=f"full_analysis_{match_index}"),
+            InlineKeyboardButton(text="🍸 РЕКОМЕНДАЦИИ", callback_data=f"recommendations_{match_index}")
+        ],
+        [
+            InlineKeyboardButton(text="⚡ БЫСТРЫЙ ПРОГНОЗ", callback_data=f"quick_pred_{match_index}"),
+            InlineKeyboardButton(text="📊 СТАТИСТИКА", callback_data=f"stats_{match_index}")
+        ],
+        [
+            InlineKeyboardButton(text="🍻 ВЫБРАТЬ ДРУГОЙ МАТЧ", callback_data="analyze_bar"),
+            InlineKeyboardButton(text="🍺 В БАР", callback_data="back")
+        ]
+    ]
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# ========== ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ ==========
+panda_api = PandaScoreAPI(PANDASCORE_TOKEN)
+neural_network = DeepSeekNeuralNetwork()
 
 # ========== ОБРАБОТЧИКИ ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Старт"""
-    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
+    """Старт - вход в бар"""
+    neural_status = "✅ БАРМЕН НА МЕСТЕ" if neural_network.active else "❌ БАРМЕН ОТДЫХАЕТ"
     
     welcome = f"""
-🎮 <b>CS2 NEURAL ANALYST</b>
+{get_drink_emoji("пиво")} <b>ДОБРО ПОЖАЛОВАТЬ В CS2 БАР "HEADSHOT"!</b>
 
-Ваш персональный AI-аналитик для матчей Counter-Strike 2!
+<i>Здесь анализируют киберспорт с бокалом пенного!</i>
 
-<b>🤖 Нейросеть DeepSeek:</b> {neural_status}
-<b>📊 Источник данных:</b> PandaScore API
-<b>⏱️ Время:</b> MSK (Москва)
+<b>{get_drink_emoji("коктейль")} Ваш бармен-аналитик:</b> {neural_status}
+<b>📊 Источник матчей:</b> PandaScore API
+<b>🕐 Время:</b> MSK (Москва)
 
-<b>Что умеет бот:</b>
-• 📅 Показывает матчи на сегодня/завтра
-• 🔥 Отслеживает live трансляции
-• 🧠 Анализирует матчи с помощью нейросети
-• 📈 Дает точные прогнозы и рекомендации
-• ⚡ Быстрые и детальные отчеты
+<b>{get_drink_emoji("виски")} Что предлагает бар:</b>
+• 🍺 Расписание матчей на сегодня/завтра
+• 🔥 LIVE трансляции с комментариями
+• 🎯 Экспертный анализ от бармена
+• 📈 Прогнозы с "вкусом" победы
+• ⚡ Быстрые и креативные отчеты
 
-{"⚠️ <b>ВНИМАНИЕ:</b> Для полного функционала добавьте DEEPSEEK_API_KEY" if not neural_network.active else "✅ <b>Нейросеть готова к работе!</b>"}
+{get_drink_emoji("шампанское")} <b>Специальное предложение:</b>
+Закажи анализ матча и получи рекомендацию по напитку!
 
-👇 <b>Выберите раздел:</b>
+{"⚠️ <b>Бармен отдыхает! Добавьте DEEPSEEK_API_KEY для активации</b>" if not neural_network.active else "✅ <b>Бар готов к работе! Заказывайте анализы!</b>"}
+
+👇 <b>Выберите действие:</b>
 """
     
     await message.answer(
@@ -643,14 +491,15 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data == "today")
 async def handle_today(callback: types.CallbackQuery):
     """Матчи сегодня"""
-    await callback.answer("📅 Загружаю матчи на сегодня...")
+    await callback.answer("🍺 Смотрю расписание на сегодня...")
     
     matches = await panda_api.get_today_matches()
     
     if not matches:
         await callback.message.edit_text(
-            "📭 <b>На сегодня нет запланированных матчей CS2</b>\n\n"
-            "Попробуйте проверить матчи на завтра или live трансляции.",
+            f"🍻 <b>СЕГОДНЯ В БАРЕ ТИХО</b>\n\n"
+            f"На {datetime.now().strftime('%d.%m.%Y')} нет запланированных матчей CS2.\n\n"
+            f"<i>Может, заглянем на завтра или посмотрим live трансляции?</i>",
             reply_markup=create_main_keyboard()
         )
         return
@@ -658,15 +507,15 @@ async def handle_today(callback: types.CallbackQuery):
     matches.sort(key=lambda x: x.get("scheduled_at", ""))
     
     lines = [
-        f"📅 <b>МАТЧИ НА СЕГОДНЯ</b>",
+        f"{get_drink_emoji('пиво')} <b>МАТЧИ В БАРЕ СЕГОДНЯ</b>",
         f"<i>{datetime.now().strftime('%d.%m.%Y')}</i>",
-        "",
+        f"",
         f"📊 Найдено матчей: {len(matches)}",
         "─" * 40,
-        ""
+        f""
     ]
     
-    for i, match in enumerate(matches[:12], 1):
+    for i, match in enumerate(matches[:10], 1):
         opponents = match.get("opponents", [])
         if len(opponents) >= 2:
             team1 = opponents[0].get("opponent", {})
@@ -680,15 +529,16 @@ async def handle_today(callback: types.CallbackQuery):
             time_str = format_match_time(match.get("scheduled_at", ""))
             league = match.get("league", {}).get("name", "")
             
-            lines.append(f"{i}. {team1_emoji} <b>{team1_name}</b> vs {team2_emoji} <b>{team2_name}</b>")
-            lines.append(f"   ⏰ {time_str} | 🏆 {league[:25]}" + ("..." if len(league) > 25 else ""))
-            lines.append("")
+            lines.append(f"{i}. {team1_emoji} <b>{team1_name}</b> 🆚 {team2_emoji} <b>{team2_name}</b>")
+            lines.append(f"   🕐 {time_str} | 🏆 {league[:20]}" + ("..." if len(league) > 20 else ""))
+            lines.append(f"")
     
-    lines.append(f"⏱️ <i>Время указано в MSK</i>")
+    lines.append(f"<i>🕐 Время указано в MSK</i>")
+    lines.append(f"<i>🍸 Выберите матч для анализа барменом</i>")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 АНАЛИЗИРОВАТЬ МАТЧ", callback_data="analyze_neural")],
-        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+        [InlineKeyboardButton(text="🎯 АНАЛИЗ ОТ БАРМЕНА", callback_data="analyze_bar")],
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
     ])
     
     await callback.message.edit_text(
@@ -700,15 +550,16 @@ async def handle_today(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "tomorrow")
 async def handle_tomorrow(callback: types.CallbackQuery):
     """Матчи завтра"""
-    await callback.answer("📅 Загружаю матчи на завтра...")
+    await callback.answer("🍻 Смотрю расписание на завтра...")
     
     matches = await panda_api.get_tomorrow_matches()
     
     if not matches:
         tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
         await callback.message.edit_text(
-            f"📭 <b>На завтра ({tomorrow_date}) нет запланированных матчей</b>\n\n"
-            "Попробуйте проверить матчи на сегодня.",
+            f"🍺 <b>ЗАВТРА БАР ЗАКРЫТ НА САНИТАРНЫЙ ДЕНЬ</b>\n\n"
+            f"На {tomorrow_date} нет запланированных матчей CS2.\n\n"
+            f"<i>Загляните сегодня или отдохните с нами!</i>",
             reply_markup=create_main_keyboard()
         )
         return
@@ -717,15 +568,15 @@ async def handle_tomorrow(callback: types.CallbackQuery):
     
     tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
     lines = [
-        f"📅 <b>МАТЧИ НА ЗАВТРА</b>",
+        f"{get_drink_emoji('вино')} <b>МАТЧИ В БАРЕ ЗАВТРА</b>",
         f"<i>{tomorrow_date}</i>",
-        "",
+        f"",
         f"📊 Найдено матчей: {len(matches)}",
         "─" * 40,
-        ""
+        f""
     ]
     
-    for i, match in enumerate(matches[:8], 1):
+    for i, match in enumerate(matches[:6], 1):
         opponents = match.get("opponents", [])
         if len(opponents) >= 2:
             team1 = opponents[0].get("opponent", {})
@@ -739,14 +590,14 @@ async def handle_tomorrow(callback: types.CallbackQuery):
             time_str = format_match_time(match.get("scheduled_at", ""))
             league = match.get("league", {}).get("name", "")
             
-            lines.append(f"{i}. {team1_emoji} <b>{team1_name}</b> vs {team2_emoji} <b>{team2_name}</b>")
-            lines.append(f"   ⏰ {time_str} | 🏆 {league[:20]}" + ("..." if len(league) > 20 else ""))
-            lines.append("")
+            lines.append(f"{i}. {team1_emoji} <b>{team1_name}</b> 🆚 {team2_emoji} <b>{team2_name}</b>")
+            lines.append(f"   🕐 {time_str} | 🏆 {league[:20]}" + ("..." if len(league) > 20 else ""))
+            lines.append(f"")
     
-    lines.append(f"⏱️ <i>Время указано в MSK</i>")
+    lines.append(f"<i>🕐 Время указано в MSK</i>")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
     ])
     
     await callback.message.edit_text(
@@ -764,18 +615,19 @@ async def handle_live(callback: types.CallbackQuery):
     
     if not matches:
         await callback.message.edit_text(
-            "📡 <b>В данный момент нет live матчей CS2</b>\n\n"
-            "Проверьте расписание предстоящих матчей.",
+            f"🍻 <b>В БАРЕ СЕЙЧАС ТИШИНА</b>\n\n"
+            f"В данный момент нет live матчей CS2.\n\n"
+            f"<i>Проверьте расписание или закажите анализ будущих матчей!</i>",
             reply_markup=create_main_keyboard()
         )
         return
     
     lines = [
-        "🔥 <b>LIVE МАТЧИ CS2</b>",
-        "",
+        f"🔥 <b>LIVE МАТЧИ В БАРЕ</b>",
+        f"",
         f"📊 Матчей в эфире: {len(matches)}",
         "─" * 40,
-        ""
+        f""
     ]
     
     for i, match in enumerate(matches, 1):
@@ -802,12 +654,12 @@ async def handle_live(callback: types.CallbackQuery):
             # Ссылка на трансляцию если есть
             stream_url = match.get("official_stream_url")
             if stream_url:
-                lines.append(f"   📺 <a href='{stream_url}'>Смотреть трансляцию</a>")
+                lines.append(f"   📺 <a href='{stream_url}'>Смотреть в баре</a>")
             
-            lines.append("")
+            lines.append(f"")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
     ])
     
     await callback.message.edit_text(
@@ -816,41 +668,43 @@ async def handle_live(callback: types.CallbackQuery):
         disable_web_page_preview=True
     )
 
-@dp.callback_query(F.data == "analyze_neural")
-async def handle_analyze_neural(callback: types.CallbackQuery):
-    """Выбор матча для анализа нейросетью"""
-    await callback.answer("🤖 Загружаю матчи для анализа...")
+@dp.callback_query(F.data == "analyze_bar")
+async def handle_analyze_bar(callback: types.CallbackQuery):
+    """Выбор матча для анализа барменом"""
+    await callback.answer("🎯 Бармен готовит инструменты...")
     
     matches = await panda_api.get_today_matches()
     
     if not matches:
         await callback.message.edit_text(
-            "📭 <b>Сегодня нет матчей для анализа</b>\n\n"
-            "Попробуйте завтра или проверьте live матчи.",
+            f"🍻 <b>БАРМЕНУ НЕЧЕГО АНАЛИЗИРОВАТЬ</b>\n\n"
+            f"Сегодня нет матчей для анализа.\n\n"
+            f"<i>Загляните завтра или отдохните с напитком!</i>",
             reply_markup=create_main_keyboard()
         )
         return
     
-    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
+    neural_status = "✅ БАРМЕН ГОТОВ" if neural_network.active else "❌ БАРМЕН ОТДЫХАЕТ"
     
     await callback.message.edit_text(
-        f"🤖 <b>ВЫБЕРИТЕ МАТЧ ДЛЯ АНАЛИЗА</b>\n\n"
-        f"Найдено матчей на сегодня: {len(matches)}\n"
-        f"Нейросеть DeepSeek: {neural_status}\n\n"
-        f"{'🧠 Матч будет проанализирован настоящей нейросетью!' if neural_network.active else '⚠️ Нейросеть не активирована. Используется умный fallback анализ.'}",
-        reply_markup=create_match_selection_keyboard(matches, "neural")
+        f"{get_drink_emoji('коктейль')} <b>ВЫБЕРИТЕ МАТЧ ДЛЯ АНАЛИЗА</b>\n\n"
+        f"🍺 Найдено матчей на сегодня: {len(matches)}\n"
+        f"🎯 Состояние бармена: {neural_status}\n\n"
+        f"{'🍸 Бармен приготовит для вас экспертный анализ с юмором!' if neural_network.active else '⚠️ Бармен отдыхает. Активируйте нейросеть для анализа.'}",
+        reply_markup=create_match_selection_keyboard(matches, "bar_analyze")
     )
 
-@dp.callback_query(F.data.startswith("neural_"))
-async def handle_neural_analysis(callback: types.CallbackQuery):
-    """Анализ матча нейросетью"""
-    match_index = int(callback.data.split("_")[1])
-    await callback.answer("🧠 Нейросеть анализирует матч...")
+@dp.callback_query(F.data.startswith("bar_analyze_"))
+async def handle_bar_analysis(callback: types.CallbackQuery):
+    """Анализ матча барменом"""
+    match_index = int(callback.data.split("_")[2])
+    await callback.answer("🎯 Бармен анализирует матч...")
     
     matches = await panda_api.get_today_matches()
     if not matches or match_index >= len(matches):
         await callback.message.edit_text(
-            "❌ <b>Матч не найден</b>",
+            f"🍻 <b>МАТЧ НЕ НАЙДЕН</b>\n\n"
+            f"<i>Возможно, матч уже завершился или отменен.</i>",
             reply_markup=create_main_keyboard()
         )
         return
@@ -860,7 +714,8 @@ async def handle_neural_analysis(callback: types.CallbackQuery):
     
     if len(opponents) < 2:
         await callback.message.edit_text(
-            "❌ <b>Недостаточно данных о командах</b>",
+            f"🍺 <b>НЕДОСТАТОЧНО ИНГРЕДИЕНТОВ</b>\n\n"
+            f"<i>Бармену нужны данные обеих команд для анализа.</i>",
             reply_markup=create_main_keyboard()
         )
         return
@@ -875,79 +730,103 @@ async def handle_neural_analysis(callback: types.CallbackQuery):
     
     # Показываем статус анализа
     await callback.message.edit_text(
-        f"🧠 <b>АНАЛИЗ МАТЧА НЕЙРОСЕТЬЮ</b>\n\n"
-        f"🏆 {team1_name} vs {team2_name}\n"
-        f"⏰ {time_str} MSK | 🏆 {tournament}\n\n"
-        f"📊 <b>Статус:</b> {'Анализирую с помощью DeepSeek AI...' if neural_network.active else 'Использую умный fallback анализ...'}",
+        f"{get_drink_emoji('виски')} <b>АНАЛИЗ МАТЧА ОТ БАРМЕНА</b>\n\n"
+        f"🎯 <b>{team1_name} vs {team2_name}</b>\n"
+        f"🕐 {time_str} MSK | 🏆 {tournament}\n\n"
+        f"🍸 <b>Статус:</b> Бармен готовит для вас особый анализ...",
         disable_web_page_preview=True
     )
     
-    # Получаем анализ от нейросети или fallback
-    if neural_network.active:
+    # Получаем анализ от нейросети
+    try:
+        if not neural_network.active:
+            raise Exception("Бармен отдыхает. Активируйте нейросеть!")
+        
         analysis = await neural_network.analyze_match(
             team1_name, team2_name, tournament, time_str
         )
-        analysis_source = "🧠 DeepSeek AI"
-    else:
-        analysis = SmartFallbackAnalyzer.analyze(team1_name, team2_name, tournament)
-        analysis_source = "📊 Умный анализ"
-    
-    # Формируем результат
-    prediction = analysis.get("match_prediction", {})
-    team1_analysis = analysis.get("team1_analysis", {})
-    team2_analysis = analysis.get("team2_analysis", {})
-    
-    lines = [
-        f"🎯 <b>РЕЗУЛЬТАТ АНАЛИЗА</b>",
-        f"<i>{analysis_source}</i>",
-        f"",
-        f"🏆 <b>{team1_name} vs {team2_name}</b>",
-        f"⏰ {time_str} MSK | 🏆 {tournament}",
-        f"",
-        f"📊 <b>Прогноз:</b>",
-        f"• Победитель: <b>{prediction.get('likely_winner', 'Не определен')}</b>",
-        f"• Вероятность: <b>{prediction.get('probability', 0):.1f}%</b>",
-        f"• Счет: <b>{prediction.get('score_prediction', '?')}</b>",
-        f"• Уверенность: <b>{prediction.get('confidence', 0):.1f}%</b>",
-        f"• Риск: <b>{prediction.get('risk_level', 'MEDIUM')}</b>",
-        f"",
-        f"⚡ <b>Сила команд:</b>",
-        f"• {team1_name}: {team1_analysis.get('strength', 0):.0f}/100",
-        f"• {team2_name}: {team2_analysis.get('strength', 0):.0f}/100",
-        f"",
-        f"🎲 <b>Рекомендации:</b>"
-    ]
-    
-    # Добавляем рекомендации
-    recommended_bets = analysis.get("recommended_bets", [])
-    if recommended_bets:
-        for bet in recommended_bets[:2]:
-            lines.append(f"• {bet.get('type', 'Нет данных')}")
-            if bet.get('reason'):
-                lines.append(f"  <i>{bet['reason']}</i>")
-    else:
-        lines.append("• Нет конкретных рекомендаций")
-    
-    lines.extend([
-        f"",
-        f"📈 <b>Ключевые факторы:</b>"
-    ])
-    
-    # Добавляем ключевые факторы
-    key_factors = analysis.get("key_factors", [])
-    for factor in key_factors[:3]:
-        lines.append(f"• {factor}")
-    
-    lines.extend([
-        f"",
-        f"⚠️ <i>Анализ основан на {'нейросети DeepSeek' if neural_network.active else 'статистике и знаниях'}. Риск есть всегда.</i>"
-    ])
-    
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=create_analysis_keyboard(match_index, neural_network.active),
-        disable_web_page_preview=True
-    )
+        
+        # Формируем результат в стиле бара
+        prediction = analysis.get("match_prediction", {})
+        team1_analysis = analysis.get("team1_analysis", {})
+        team2_analysis = analysis.get("team2_analysis", {})
+        
+        lines = [
+            f"{get_drink_emoji('шампанское')} <b>АНАЛИЗ ОТ БАРМЕНА</b>",
+            f"<i>Бар «HeadShot», {analysis.get('analysis_time', '')}</i>",
+            f"",
+            f"{analysis.get('bar_intro', '🎯 Интересный матч в нашем баре!')}",
+            f"",
+            f"🎯 <b>МАТЧ:</b> {team1_name} 🆚 {team2_name}",
+            f"🕐 {time_str} MSK | 🏆 {tournament}",
+            f"",
+            f"🍺 <b>БАРНЫЙ ПРОГНОЗ:</b>",
+            f"• Победитель: <b>{prediction.get('likely_winner', '?')}</b>",
+            f"• Вероятность: <b>{prediction.get('probability', 0):.1f}%</b>",
+            f"• Счет: <b>{prediction.get('score_prediction', '?')}</b>",
+            f"• Уверенность бармена: <b>{prediction.get('confidence', 0):.1f}%</b>",
+            f"• Риск: <b>{prediction.get('risk_level', 'MEDIUM')}</b>",
+            f"• {prediction.get('bar_metaphor', 'Крепкий матч как хороший виски')}",
+            f"",
+            f"⚡ <b>СИЛА КОМАНД (в кружках пива):</b>",
+            f"• {team1_analysis.get('bar_nickname', team1_name)}: {team1_analysis.get('strength', 0):.0f}/100",
+            f"• {team2_analysis.get('bar_nickname', team2_name)}: {team2_analysis.get('strength', 0):.0f}/100",
+            f"",
+            f"🍸 <b>БАРНЫЕ РЕКОМЕНДАЦИИ:</b>"
+        ]
+        
+        # Добавляем рекомендации
+        recommended_bets = analysis.get("recommended_bets", [])
+        if recommended_bets:
+            for bet in recommended_bets[:2]:
+                drink_emoji = get_drink_emoji(bet.get('bar_drink', 'коктейль'))
+                lines.append(f"• {drink_emoji} <b>{bet.get('type', 'Нет данных')}</b>")
+                if bet.get('reason'):
+                    lines.append(f"  <i>{bet['reason']}</i>")
+                lines.append(f"  Уверенность: {bet.get('confidence', 'MEDIUM')}")
+        else:
+            lines.append("• Пока отдыхайте и наблюдайте за игрой")
+        
+        lines.extend([
+            f"",
+            f"🎯 <b>КЛЮЧЕВЫЕ МОМЕНТЫ:</b>"
+        ])
+        
+        # Добавляем ключевые факторы
+        key_factors = analysis.get("key_factors", [])
+        for factor in key_factors[:3]:
+            lines.append(f"• {factor}")
+        
+        # Забавный комментарий
+        if analysis.get('funny_comment'):
+            lines.extend([
+                f"",
+                f"😄 <b>КОММЕНТАРИЙ БАРМЕНА:</b>",
+                f"{analysis.get('funny_comment')}"
+            ])
+        
+        lines.extend([
+            f"",
+            f"💡 <b>СОВЕТ БАРМЕНА:</b> {analysis.get('bar_tip', 'Наслаждайтесь игрой!')}",
+            f"",
+            f"⚠️ <i>Анализ от бармена. Играйте ответственно и с удовольствием!</i>"
+        ])
+        
+        await callback.message.edit_text(
+            "\n".join(lines),
+            reply_markup=create_analysis_keyboard(match_index),
+            disable_web_page_preview=True
+        )
+        
+    except Exception as e:
+        error_message = str(e)
+        await callback.message.edit_text(
+            f"🍻 <b>ОШИБКА В БАРЕ</b>\n\n"
+            f"Бармен не смог проанализировать матч:\n"
+            f"<code>{error_message}</code>\n\n"
+            f"<i>Попробуйте другой матч или загляните позже!</i>",
+            reply_markup=create_main_keyboard()
+        )
 
 @dp.callback_query(F.data.startswith("full_analysis_"))
 async def handle_full_analysis(callback: types.CallbackQuery):
@@ -956,14 +835,14 @@ async def handle_full_analysis(callback: types.CallbackQuery):
     
     matches = await panda_api.get_today_matches()
     if not matches or match_index >= len(matches):
-        await callback.answer("❌ Матч не найден")
+        await callback.answer("🍺 Матч не найден")
         return
     
     match = matches[match_index]
     opponents = match.get("opponents", [])
     
     if len(opponents) < 2:
-        await callback.answer("❌ Недостаточно данных")
+        await callback.answer("🍻 Недостаточно данных")
         return
     
     team1 = opponents[0].get("opponent", {})
@@ -975,104 +854,109 @@ async def handle_full_analysis(callback: types.CallbackQuery):
     time_str = format_match_time(match.get("scheduled_at", ""))
     
     # Получаем анализ
-    if neural_network.active:
+    try:
+        if not neural_network.active:
+            raise Exception("Бармен отдыхает")
+        
         analysis = await neural_network.analyze_match(
             team1_name, team2_name, tournament, time_str
         )
-    else:
-        analysis = SmartFallbackAnalyzer.analyze(team1_name, team2_name, tournament)
-    
-    # Форматируем полный анализ
-    lines = [
-        f"🧠 <b>ПОЛНЫЙ АНАЛИЗ МАТЧА</b>",
-        f"",
-        f"🏆 <b>{team1_name} vs {team2_name}</b>",
-        f"⏰ {time_str} MSK | 🏆 {tournament}",
-        f"",
-        f"📊 <b>Анализ {team1_name}:</b>",
-        f"• Сила: {analysis.get('team1_analysis', {}).get('strength', 0):.0f}/100",
-        f"• Форма: {analysis.get('team1_analysis', {}).get('current_form', 'Нет данных')}",
-        f"• Сильные стороны:",
-    ]
-    
-    strengths1 = analysis.get('team1_analysis', {}).get('key_strengths', [])
-    for strength in strengths1[:3]:
-        lines.append(f"  - {strength}")
-    
-    lines.extend([
-        f"• Слабые стороны:",
-    ])
-    
-    weaknesses1 = analysis.get('team1_analysis', {}).get('weaknesses', [])
-    for weakness in weaknesses1[:3]:
-        lines.append(f"  - {weakness}")
-    
-    lines.extend([
-        f"",
-        f"📊 <b>Анализ {team2_name}:</b>",
-        f"• Сила: {analysis.get('team2_analysis', {}).get('strength', 0):.0f}/100",
-        f"• Форма: {analysis.get('team2_analysis', {}).get('current_form', 'Нет данных')}",
-        f"• Сильные стороны:",
-    ])
-    
-    strengths2 = analysis.get('team2_analysis', {}).get('key_strengths', [])
-    for strength in strengths2[:3]:
-        lines.append(f"  - {strength}")
-    
-    lines.extend([
-        f"• Слабые стороны:",
-    ])
-    
-    weaknesses2 = analysis.get('team2_analysis', {}).get('weaknesses', [])
-    for weakness in weaknesses2[:3]:
-        lines.append(f"  - {weakness}")
-    
-    lines.extend([
-        f"",
-        f"🎯 <b>Детальный прогноз:</b>",
-        f"{analysis.get('detailed_analysis', 'Нет детального анализа')}",
-        f"",
-        f"📈 <b>Источник:</b> {analysis.get('source', 'Неизвестно')}",
-        f"🕒 <b>Время анализа:</b> {analysis.get('analysis_time', 'Неизвестно')}",
-    ])
-    
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=create_analysis_keyboard(match_index, neural_network.active),
-        disable_web_page_preview=True
-    )
-    await callback.answer()
+        
+        # Форматируем полный анализ
+        lines = [
+            f"{get_drink_emoji('виски')} <b>ПОЛНЫЙ АНАЛИЗ ОТ БАРМЕНА</b>",
+            f"",
+            f"🎯 <b>{team1_name} 🆚 {team2_name}</b>",
+            f"🕐 {time_str} MSK | 🏆 {tournament}",
+            f"",
+            f"🍺 <b>АНАЛИЗ {team1_analysis.get('bar_nickname', team1_name)}:</b>",
+            f"• Сила: {analysis.get('team1_analysis', {}).get('strength', 0):.0f}/100 кружек",
+            f"• Форма: {analysis.get('team1_analysis', {}).get('current_form', 'Нет данных')}",
+            f"• Сильные стороны (как у хорошего напитка):",
+        ]
+        
+        strengths1 = analysis.get('team1_analysis', {}).get('key_strengths', [])
+        for strength in strengths1[:3]:
+            lines.append(f"  - {strength}")
+        
+        lines.extend([
+            f"• Слабые стороны (как у плохого пива):",
+        ])
+        
+        weaknesses1 = analysis.get('team1_analysis', {}).get('weaknesses', [])
+        for weakness in weaknesses1[:3]:
+            lines.append(f"  - {weakness}")
+        
+        lines.extend([
+            f"",
+            f"🍻 <b>АНАЛИЗ {team2_analysis.get('bar_nickname', team2_name)}:</b>",
+            f"• Сила: {analysis.get('team2_analysis', {}).get('strength', 0):.0f}/100 кружек",
+            f"• Форма: {analysis.get('team2_analysis', {}).get('current_form', 'Нет данных')}",
+            f"• Сильные стороны:",
+        ])
+        
+        strengths2 = analysis.get('team2_analysis', {}).get('key_strengths', [])
+        for strength in strengths2[:3]:
+            lines.append(f"  - {strength}")
+        
+        lines.extend([
+            f"• Слабые стороны:",
+        ])
+        
+        weaknesses2 = analysis.get('team2_analysis', {}).get('weaknesses', [])
+        for weakness in weaknesses2[:3]:
+            lines.append(f"  - {weakness}")
+        
+        lines.extend([
+            f"",
+            f"🎯 <b>ДЕТАЛЬНЫЙ АНАЛИЗ БАРМЕНА:</b>",
+            f"{analysis.get('detailed_analysis', 'Нет детального анализа')}",
+            f"",
+            f"📊 <b>Источник:</b> {analysis.get('source', 'Бармен')}",
+            f"🕒 <b>Время анализа:</b> {analysis.get('analysis_time', 'Неизвестно')}",
+            f"🍸 <b>Бар:</b> {analysis.get('bar_name', 'CS2 Бар «HeadShot»')}",
+        ])
+        
+        await callback.message.edit_text(
+            "\n".join(lines),
+            reply_markup=create_analysis_keyboard(match_index),
+            disable_web_page_preview=True
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"🍻 Ошибка: {str(e)[:30]}...")
 
 @dp.callback_query(F.data == "settings")
 async def handle_settings(callback: types.CallbackQuery):
-    """Настройки"""
-    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
+    """Настройки бара"""
+    neural_status = "✅ БАРМЕН НА МЕСТЕ" if neural_network.active else "❌ БАРМЕН ОТДЫХАЕТ"
     
     lines = [
-        "⚙️ <b>НАСТРОЙКИ БОТА</b>",
-        "",
-        f"🤖 <b>Нейросеть DeepSeek:</b> {neural_status}",
-        f"📊 <b>Источник матчей:</b> PandaScore API",
-        f"⏱️ <b>Часовой пояс:</b> MSK (UTC+3)",
+        f"{get_drink_emoji('коктейль')} <b>НАСТРОЙКИ БАРА</b>",
         f"",
-        f"🔧 <b>Как активировать нейросеть:</b>",
+        f"🍸 <b>Состояние бармена:</b> {neural_status}",
+        f"📊 <b>Источник матчей:</b> PandaScore API",
+        f"🕐 <b>Часовой пояс:</b> MSK (UTC+3)",
+        f"",
+        f"⚙️ <b>КАК АКТИВИРОВАТЬ БАРМЕНА:</b>",
         f"1. Получите API ключ на https://platform.deepseek.com",
         f"2. Добавьте в Railway Variables: DEEPSEEK_API_KEY",
-        f"3. Перезапустите приложение",
+        f"3. Перезапустите бар",
         f"",
-        f"💡 <b>Преимущества нейросети:</b>",
-        f"• Анализ на основе статистики 1000+ матчей",
+        f"🎯 <b>ПРЕИМУЩЕСТВА БАРМЕНА:</b>",
+        f"• Анализ с юмором и креативом",
         f"• Учет формы, состава, тактики",
-        f"• Точные вероятности и прогнозы",
-        f"• Детальные отчеты по каждому матчу",
+        f"• Прогнозы с барными метафорами",
+        f"• Рекомендации по напиткам",
         f"",
-        f"⚠️ <b>Текущий статус:</b>",
-        f"{'🧠 Нейросеть активна и готова к работе!' if neural_network.active else '❌ Нейросеть не активирована. Используется базовый анализ.'}"
+        f"💡 <b>ТЕКУЩИЙ СТАТУС:</b>",
+        f"{'🍸 Бармен готов к работе! Заказывайте анализы!' if neural_network.active else '🍺 Бармен отдыхает. Активируйте для полного функционала.'}"
     ]
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 ПРОВЕРИТЬ СТАТУС", callback_data="check_status")],
-        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+        [InlineKeyboardButton(text="🔄 ПРОВЕРИТЬ БАРМЕНА", callback_data="check_bartender")],
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
     ])
     
     await callback.message.edit_text(
@@ -1082,31 +966,29 @@ async def handle_settings(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "check_status")
-async def handle_check_status(callback: types.CallbackQuery):
-    """Проверка статуса нейросети"""
-    # Переинициализируем нейросеть для проверки
+@dp.callback_query(F.data == "check_bartender")
+async def handle_check_bartender(callback: types.CallbackQuery):
+    """Проверка состояния бармена"""
+    # Переинициализируем нейросеть
     neural_network.__init__()
     
-    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
+    neural_status = "✅ БАРМЕН ГОТОВ" if neural_network.active else "❌ БАРМЕН ОТДЫХАЕТ"
     await callback.answer(f"Статус: {neural_status}")
     
-    # Обновляем сообщение с настройками
     lines = [
-        "⚙️ <b>НАСТРОЙКИ БОТА</b>",
-        "",
-        f"🤖 <b>Нейросеть DeepSeek:</b> {neural_status}",
-        f"📊 <b>Источник матчей:</b> PandaScore API",
-        f"⏱️ <b>Часовой пояс:</b> MSK (UTC+3)",
+        f"{get_drink_emoji('шампанское')} <b>ПРОВЕРКА БАРМЕНА</b>",
         f"",
-        f"🔄 <b>Статус проверен:</b> {datetime.now().strftime('%H:%M:%S')}",
+        f"🍸 <b>Состояние бармена:</b> {neural_status}",
+        f"🕒 <b>Время проверки:</b> {datetime.now().strftime('%H:%M:%S')}",
         f"",
-        f"{'✅ Нейросеть успешно подключена!' if neural_network.active else '❌ Нейросеть недоступна. Проверьте DEEPSEEK_API_KEY'}",
+        f"{'🎯 Бармен успешно проверен и готов к работе!' if neural_network.active else '🍺 Бармен не доступен. Проверьте DEEPSEEK_API_KEY'}",
+        f"",
+        f"<i>Бар «HeadShot» всегда к вашим услугам!</i>"
     ]
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 ПРОВЕРИТЬ СТАТУС", callback_data="check_status")],
-        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+        [InlineKeyboardButton(text="🍸 ЗАКАЗАТЬ АНАЛИЗ", callback_data="analyze_bar")],
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
     ])
     
     await callback.message.edit_text(
@@ -1115,84 +997,119 @@ async def handle_check_status(callback: types.CallbackQuery):
         disable_web_page_preview=True
     )
 
-@dp.callback_query(F.data == "help")
-async def handle_help(callback: types.CallbackQuery):
-    """Помощь"""
-    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
-    
-    help_text = f"""
-🎮 <b>CS2 NEURAL ANALYST - ПОМОЩЬ</b>
+@dp.callback_query(F.data == "about")
+async def handle_about(callback: types.CallbackQuery):
+    """О баре"""
+    about_text = f"""
+{get_drink_emoji('пиво')} <b>О БАРЕ «HEADSHOT»</b>
 
-<b>Основные функции:</b>
-• <b>МАТЧИ СЕГОДНЯ/ЗАВТРА</b> - Расписание предстоящих игр
-• <b>LIVE МАТЧИ</b> - Текущие матчи в прямом эфире
-• <b>АНАЛИЗ НЕЙРОСЕТЬЮ</b> 🧠 - Детальный прогноз от AI
-• <b>НАСТРОЙКИ</b> ⚙️ - Управление параметрами бота
+<i>Где киберспорт встречается с хорошими напитками!</i>
 
-<b>Статус нейросети:</b> {neural_status}
+{get_drink_emoji('коктейль')} <b>НАША ФИЛОСОФИЯ:</b>
+Анализируем CS2 с бокалом в руке и юмором в сердце!
 
-<b>Как работает анализ:</b>
-1. Бот получает данные о матчах с PandaScore API
-2. Нейросеть DeepSeek анализирует статистику команд
-3. Учитываются: форма, составы, тактика, история встреч
-4. Формируется детальный прогноз с вероятностями
+{get_drink_emoji('виски')} <b>ЧТО МЫ ДЕЛАЕМ:</b>
+• 🎯 Анализируем матчи с помощью AI
+• 📊 Даем экспертные прогнозы
+• 🍸 Рекомендуем напитки под настроение
+• 😄 Добавляем юмора и креатива
 
-<b>Рекомендации по использованию:</b>
-• Анализируйте матчи за 1-2 часа до начала
-• Учитывайте уровень риска в прогнозах
-• Сравнивайте несколько анализов для точности
-• Для лучших результатов активируйте нейросеть
+{get_drink_emoji('вино')} <b>НАШ БАРМЕН:</b>
+Опытный аналитик с нейросетью DeepSeek, который знает о CS2 всё и даже больше!
 
-<b>Важно:</b>
-• Бот для аналитических целей
-• Прогнозы не гарантируют результат
-• Играйте ответственно (18+)
-• Нейросеть требует интернет-соединение
+{get_drink_emoji('шампанское')} <b>ПОЧЕМУ МЫ:</b>
+• Уникальный барный стиль анализа
+• Креативные метафоры и сравнения
+• Честные и объективные прогнозы
+• Атмосфера настоящего киберспорт-бара
 
-<i>Удачи в анализах! 🍀</i>
+{get_drink_emoji('энергетик')} <b>ВАЖНО:</b>
+• Анализы для удовольствия и информации
+• Играйте ответственно (21+)
+• Наслаждайтесь игрой и хорошей компанией
+
+<i>Заходите к нам чаще - в баре всегда интересно! 🍻</i>
 """
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚙️ НАСТРОЙКИ", callback_data="settings")],
-        [InlineKeyboardButton(text="🏠 В МЕНЮ", callback_data="back")]
+        [InlineKeyboardButton(text="🍸 ЗАКАЗАТЬ АНАЛИЗ", callback_data="analyze_bar")],
+        [InlineKeyboardButton(text="⚙️ НАСТРОЙКИ БАРА", callback_data="settings")],
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
     ])
     
     await callback.message.edit_text(
-        help_text,
+        about_text,
         reply_markup=keyboard,
         disable_web_page_preview=True
     )
     await callback.answer()
 
+@dp.callback_query(F.data == "custom_analysis")
+async def handle_custom_analysis(callback: types.CallbackQuery):
+    """Заказ анализа"""
+    await callback.answer("🎯 Готовим бланк заказа...")
+    
+    lines = [
+        f"{get_drink_emoji('коктейль')} <b>ЗАКАЗ АНАЛИЗА ОТ БАРМЕНА</b>",
+        f"",
+        f"🍸 <b>Как заказать анализ:</b>",
+        f"1. Используйте команду /analyze Team1 Team2",
+        f"2. Укажите турнир (опционально)",
+        f"",
+        f"🎯 <b>Примеры:</b>",
+        f"<code>/analyze NAVI Vitality</code>",
+        f"<code>/analyze FaZe G2 ESL Pro League</code>",
+        f"",
+        f"🍺 <b>Что вы получите:</b>",
+        f"• Экспертный анализ матча",
+        f"• Прогноз победителя и счета",
+        f"• Рекомендации по ставкам",
+        f"• Советы по напиткам",
+        f"• Забавный комментарий от бармена",
+        f"",
+        f"<i>Бармен готовится к вашему заказу! 🎯</i>"
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎯 ПРОАНАЛИЗИРОВАТЬ", callback_data="analyze_bar")],
+        [InlineKeyboardButton(text="🍺 В БАР", callback_data="back")]
+    ])
+    
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=keyboard,
+        disable_web_page_preview=True
+    )
+
 @dp.callback_query(F.data == "back")
+@dp.callback_query(F.data == "home")
 async def handle_back(callback: types.CallbackQuery):
     """Назад в главное меню"""
-    if callback.message:
-        await cmd_start(callback.message)
+    await cmd_start(callback.message)
     await callback.answer()
 
 # ========== КОМАНДЫ ==========
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
-    """Проверка статуса"""
-    neural_status = "✅ АКТИВНА" if neural_network.active else "❌ НЕ АКТИВНА"
+    """Проверка статуса бара"""
+    neural_status = "✅ БАРМЕН НА МЕСТЕ" if neural_network.active else "❌ БАРМЕН ОТДЫХАЕТ"
     
     status_text = (
-        f"🤖 <b>СТАТУС СИСТЕМЫ</b>\n\n"
-        f"• Нейросеть DeepSeek: {neural_status}\n"
+        f"{get_drink_emoji('пиво')} <b>СТАТУС БАРА «HEADSHOT»</b>\n\n"
+        f"• Бармен: {neural_status}\n"
         f"• API PandaScore: {'✅' if PANDASCORE_TOKEN else '❌'}\n"
-        f"• Бот Telegram: ✅\n"
-        f"• Время сервера: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}\n\n"
+        f"• Бар: ✅ ОТКРЫТ\n"
+        f"• Время: {datetime.now().strftime('%d.%m.%Y %H:%M MSK')}\n\n"
     )
     
     if neural_network.active:
-        status_text += "🧠 <b>Нейросеть готова к анализу!</b>\n"
-        status_text += "Используйте /analyze команду для быстрого анализа"
+        status_text += f"{get_drink_emoji('шампанское')} <b>Бармен готов к работе!</b>\n"
+        status_text += f"Используйте /analyze для заказа анализа"
     else:
-        status_text += "⚠️ <b>Для активации нейросети:</b>\n"
-        status_text += "1. Получите ключ на platform.deepseek.com\n"
-        status_text += "2. Добавьте DEEPSEEK_API_KEY в Railway Variables\n"
-        status_text += "3. Перезапустите приложение"
+        status_text += f"{get_drink_emoji('пиво')} <b>Для активации бармена:</b>\n"
+        status_text += f"1. Получите ключ на platform.deepseek.com\n"
+        status_text += f"2. Добавьте DEEPSEEK_API_KEY в Railway Variables\n"
+        status_text += f"3. Перезапустите бар"
     
     await message.answer(status_text)
 
@@ -1202,8 +1119,8 @@ async def cmd_analyze(message: types.Message):
     args = message.text.split()
     if len(args) < 3:
         await message.answer(
-            "❌ <b>Используйте:</b> <code>/analyze NAVI Vitality</code>\n"
-            "или <code>/analyze NAVI Vitality ESL Pro League</code>"
+            f"🍻 <b>ИСПОЛЬЗУЙТЕ:</b> <code>/analyze NAVI Vitality</code>\n"
+            f"или <code>/analyze NAVI Vitality ESL Pro League</code>"
         )
         return
     
@@ -1211,56 +1128,92 @@ async def cmd_analyze(message: types.Message):
     team2 = args[2]
     tournament = " ".join(args[3:]) if len(args) > 3 else ""
     
-    status_msg = await message.answer(f"🧠 <b>Анализирую матч: {team1} vs {team2}...</b>")
+    status_msg = await message.answer(f"{get_drink_emoji('коктейль')} <b>Бармен анализирует: {team1} vs {team2}...</b>")
     
-    if neural_network.active:
+    try:
+        if not neural_network.active:
+            raise Exception("Бармен отдыхает. Активируйте нейросеть!")
+        
         analysis = await neural_network.analyze_match(team1, team2, tournament)
-        source = "🧠 DeepSeek AI"
-    else:
-        analysis = SmartFallbackAnalyzer.analyze(team1, team2, tournament)
-        source = "📊 Умный анализ"
-    
-    prediction = analysis.get("match_prediction", {})
-    
-    result = (
-        f"🎯 <b>РЕЗУЛЬТАТ АНАЛИЗА ({source})</b>\n\n"
-        f"🏆 <b>{team1} vs {team2}</b>\n"
-        f"{'🏆 ' + tournament if tournament else ''}\n\n"
-        f"📊 <b>Прогноз:</b>\n"
-        f"• Победитель: <b>{prediction.get('likely_winner', '?')}</b>\n"
-        f"• Вероятность: <b>{prediction.get('probability', 0):.1f}%</b>\n"
-        f"• Счет: <b>{prediction.get('score_prediction', '?')}</b>\n"
-        f"• Риск: <b>{prediction.get('risk_level', 'MEDIUM')}</b>\n\n"
-        f"⚠️ <i>Анализ основан на {source.lower()}</i>"
-    )
-    
-    await status_msg.edit_text(result)
+        prediction = analysis.get("match_prediction", {})
+        
+        result = (
+            f"{get_drink_emoji('шампанское')} <b>АНАЛИЗ ОТ БАРМЕНА</b>\n\n"
+            f"🎯 <b>{team1} 🆚 {team2}</b>\n"
+            f"{'🏆 ' + tournament if tournament else ''}\n\n"
+            f"🍺 <b>ПРОГНОЗ БАРМЕНА:</b>\n"
+            f"• Победитель: <b>{prediction.get('likely_winner', '?')}</b>\n"
+            f"• Вероятность: <b>{prediction.get('probability', 0):.1f}%</b>\n"
+            f"• Счет: <b>{prediction.get('score_prediction', '?')}</b>\n"
+            f"• Риск: <b>{prediction.get('risk_level', 'MEDIUM')}</b>\n"
+            f"• {prediction.get('bar_metaphor', 'Интересный матч!')}\n\n"
+            f"🍸 <i>Анализ от бармена с нейросетью DeepSeek</i>"
+        )
+        
+        await status_msg.edit_text(result)
+        
+    except Exception as e:
+        await status_msg.edit_text(
+            f"🍻 <b>ОШИБКА В БАРЕ</b>\n\n"
+            f"Бармен не смог проанализировать:\n"
+            f"<code>{str(e)}</code>"
+        )
 
-@dp.message(Command("test"))
-async def cmd_test(message: types.Message):
-    """Тестовая команда"""
-    await message.answer(
-        f"🤖 <b>Тест системы</b>\n\n"
-        f"• Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        f"• Нейросеть: {'✅ АКТИВНА' if neural_network.active else '❌ НЕ АКТИВНА'}\n"
-        f"• PandaScore: {'✅' if PANDASCORE_TOKEN else '❌'}\n"
-        f"• Bot: ✅ Работает\n"
-        f"• Версия: CS2 Neural Analyst v1.0"
-    )
+@dp.message(Command("bar"))
+async def cmd_bar(message: types.Message):
+    """Информация о баре"""
+    await cmd_start(message)
 
-# ========== ЗАПУСК БОТА ==========
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    """Помощь"""
+    help_text = f"""
+{get_drink_emoji('пиво')} <b>ПОМОЩЬ ПО БАРУ «HEADSHOT»</b>
+
+{get_drink_emoji('коктейль')} <b>КОМАНДЫ:</b>
+• /start - Вход в бар
+• /status - Статус бара
+• /analyze Team1 Team2 - Анализ матча
+• /bar - Главное меню бара
+• /help - Эта справка
+
+{get_drink_emoji('виски')} <b>ВОЗМОЖНОСТИ:</b>
+• Просмотр расписания матчей
+• Live трансляции
+• Анализ от бармена с AI
+• Прогнозы и рекомендации
+• Барный юмор и креатив
+
+{get_drink_emoji('вино')} <b>КАК РАБОТАЕТ БАРМЕН:</b>
+1. Получает данные о матчах
+2. Анализирует с помощью нейросети DeepSeek
+3. Добавляет барный стиль и юмор
+4. Дает экспертные рекомендации
+
+{get_drink_emoji('энергетик')} <b>ВАЖНО:</b>
+• Для работы бармена нужен DEEPSEEK_API_KEY
+• Анализы для информации и удовольствия
+• Играйте ответственно
+• Наслаждайтесь атмосферой бара!
+
+<i>Заходите чаще - у нас всегда интересно! 🍻</i>
+"""
+    
+    await message.answer(help_text, disable_web_page_preview=True)
+
+# ========== ЗАПУСК БАРА ==========
 
 async def main():
-    """Запуск бота"""
+    """Запуск бара"""
     logger.info("=" * 50)
-    logger.info("🎮 ЗАПУСК CS2 NEURAL ANALYST")
+    logger.info("🍺 ЗАПУСК CS2 БАРА «HEADSHOT»")
     logger.info("=" * 50)
     
     # Проверка конфигурации
-    logger.info(f"🤖 DeepSeek статус: {'✅ АКТИВНА' if neural_network.active else '❌ НЕ АКТИВНА'}")
+    logger.info(f"🎯 Состояние бармена: {'✅ НА МЕСТЕ' if neural_network.active else '❌ ОТДЫХАЕТ'}")
     logger.info(f"📊 PandaScore API: {'✅' if PANDASCORE_TOKEN else '❌'}")
     logger.info(f"🔑 Telegram Bot: {'✅' if TELEGRAM_BOT_TOKEN else '❌'}")
-    logger.info("⏱️ Часовой пояс: MSK (UTC+3)")
+    logger.info("🕐 Часовой пояс: MSK (UTC+3)")
     
     if not PANDASCORE_TOKEN:
         logger.error("❌ Нет токена PandaScore! Добавьте PANDASCORE_TOKEN в Railway Variables")
@@ -1271,19 +1224,19 @@ async def main():
         return
     
     if not neural_network.active:
-        logger.warning("⚠️ DeepSeek не активирован. Использую fallback анализ.")
+        logger.warning("⚠️ Бармен отдыхает. Активируйте нейросеть для полного функционала.")
         logger.info("💡 Для активации добавьте DEEPSEEK_API_KEY в Railway Variables")
     else:
-        logger.info("✅ Нейросеть готова к работе!")
+        logger.info("✅ Бармен готов к работе!")
     
     try:
-        logger.info("🚀 Запускаю бота...")
+        logger.info("🚀 Открываю бар...")
         await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")
+        logger.error(f"❌ Ошибка запуска бара: {e}")
     finally:
         await panda_api.close()
-        logger.info("🛑 Бот остановлен")
+        logger.info("🛑 Бар закрыт")
 
 if __name__ == "__main__":
     asyncio.run(main())
