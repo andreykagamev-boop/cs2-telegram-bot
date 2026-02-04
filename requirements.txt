@@ -1,19 +1,5 @@
-# Telegram Bot Framework
 aiogram==3.12.0
-
-# API клиент
-aiohttp==3.9.5
-
-# Кэширование
-redis==5.0.7
-
-# Конфигурация
+aiohttp==3.10.0
+openai>=1.12.0
 python-dotenv==1.0.0
-
-# Дата/время
-python-dateutil==2.9.0.post0  # опционально для удобной работы с датами
-asyncio==3.4.3
-# Логирование (обычно встроено, но можно добавить)
-# colorlog==6.8.2  # опционально для цветного логирования
-numpy==1.26.4
-openai==1.12.0
+aiohttp-sse-client==0.2.1
