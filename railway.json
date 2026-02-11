@@ -1,0 +1,10 @@
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "pip install aiogram aiohttp beautifulsoup4"
+  },
+  "deploy": {
+    "startCommand": "python dota2_railway_final.py",
+    "restartPolicyType": "ON_FAILURE"
+  }
+}
