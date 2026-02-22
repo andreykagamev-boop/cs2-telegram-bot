@@ -1,4 +1,4 @@
 python-telegram-bot==20.7
-requests==2.31.0
-beautifulsoup4==4.12.2
 aiofiles==23.2.1
+undetected-chromedriver==3.5.4
+selenium==4.15.2
