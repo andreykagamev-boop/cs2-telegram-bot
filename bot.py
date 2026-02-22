@@ -408,20 +408,18 @@ async def process_accounts_file(file_path, update, context):
         
         # Отправляем статистику
         elapsed_time = time.time() - start_time
-        stats_text = f"""
-✅ **Проверка завершена!**
-
-📊 **Статистика:**
-• Всего аккаунтов: {total}
-• ✅ Валидных: {len(results['valid'])}
-• 🔥 С плащами: {len(results['with_cape'])}
-• ⚠️ Неверных: {len(results['invalid'])}
-• 🔄 Мигрировано: {len(results['migrated'])}
-• ❌ Ошибок: {len(results['error'])}
-
-⏱ **Время проверки:** {int(elapsed_time // 60)}м {int(elapsed_time % 60)}с
-📁 **Файлы отправлены:** ✅
-"""
+        stats_text = (
+            f"✅ **Проверка завершена!**\n\n"
+            f"📊 **Статистика:**\n"
+            f"• Всего аккаунтов: {total}\n"
+            f"• ✅ Валидных: {len(results['valid'])}\n"
+            f"• 🔥 С плащами: {len(results['with_cape'])}\n"
+            f"• ⚠️ Неверных: {len(results['invalid'])}\n"
+            f"• 🔄 Мигрировано: {len(results['migrated'])}\n"
+            f"• ❌ Ошибок: {len(results['error'])}\n\n"
+            f"⏱ **Время проверки:** {int(elapsed_time // 60)}м {int(elapsed_time % 60)}с\n"
+            f"📁 **Файлы отправлены:** ✅"
+        )
         await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
         
         # Показываем топ плащей если есть
@@ -471,27 +469,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Приветственное сообщение
-    welcome_text = f"""
-👋 **OptiFine Cape Checker Bot**
-
-Привет, {update.effective_user.first_name}!
-
-🔍 **Что я умею:**
-• Проверять логин:пароль аккаунтов Minecraft
-• Определять наличие OptiFine плаща
-• Показывать последний вход и активность
-• Сортировать аккаунты по категориям
-
-📥 **Как использовать:**
-Просто отправь мне .txt файл с аккаунтами в формате:
-`email:password`
-
-📊 **Статистика бота:**
-• Проверено аккаунтов: {stats['total_checked']}
-• Найдено плащей: {stats['cape_found']}
-
-👇 **Выберите действие:**
-"""
+    welcome_text = (
+        f"👋 **OptiFine Cape Checker Bot**\n\n"
+        f"Привет, {update.effective_user.first_name}!\n\n"
+        f"🔍 **Что я умею:**\n"
+        f"• Проверять логин:пароль аккаунтов Minecraft\n"
+        f"• Определять наличие OptiFine плаща\n"
+        f"• Показывать последний вход и активность\n"
+        f"• Сортировать аккаунты по категориям\n\n"
+        f"📥 **Как использовать:**\n"
+        f"Просто отправь мне .txt файл с аккаунтами в формате:\n"
+        f"`email:password`\n\n"
+        f"📊 **Статистика бота:**\n"
+        f"• Проверено аккаунтов: {stats['total_checked']}\n"
+        f"• Найдено плащей: {stats['cape_found']}\n\n"
+        f"👇 **Выберите действие:**"
+    )
     
     await update.message.reply_text(
         welcome_text,
@@ -509,55 +502,225 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hours = int(uptime.seconds // 3600)
         minutes = int((uptime.seconds // 60) % 60)
         
-        text = f"""
-📊 **Статистика бота:**
-
-📈 **Всего проверено:** {stats['total_checked']}
-✅ **Валидных:** {stats['valid_accounts']}
-❌ **Невалидных:** {stats['invalid_accounts']}
-🔥 **С плащами:** {stats['cape_found']}
-
-⏱ **Работает:** {hours}ч {minutes}мин
-📅 **Запущен:** {stats['start_time'].strftime('%d.%m.%Y %H:%M')}
-"""
+        text = (
+            f"📊 **Статистика бота:**\n\n"
+            f"📈 **Всего проверено:** {stats['total_checked']}\n"
+            f"✅ **Валидных:** {stats['valid_accounts']}\n"
+            f"❌ **Невалидных:** {stats['invalid_accounts']}\n"
+            f"🔥 **С плащами:** {stats['cape_found']}\n\n"
+            f"⏱ **Работает:** {hours}ч {minutes}мин\n"
+            f"📅 **Запущен:** {stats['start_time'].strftime('%d.%m.%Y %H:%M')}"
+        )
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     
     elif query.data == 'help':
-        text = """
-📚 **Как пользоваться ботом:**
-
-1️⃣ **Подготовьте файл**
-   • Создайте текстовый файл (.txt)
-   • Каждая строка: логин:пароль
-   • Пример: `email@gmail.com:password123`
-
-2️⃣ **Отправьте файл**
-   • Нажмите на скрепку 📎
-   • Выберите ваш .txt файл
-   • Отправьте боту
-
-3️⃣ **Дождитесь результатов**
-   • Бот покажет прогресс
-   • После проверки придут файлы:
-     - Валидные аккаунты
-     - Аккаунты с плащами
-     - Невалидные аккаунты
-
-⚠️ **Важно:**
-• Только старые аккаунты Mojang
-• Microsoft не поддерживаются
-• Файл не больше 5 МБ
-• До 1000 аккаунтов за раз
-
-📌 **Команды:**
-/start - Главное меню
-/stats - Статистика
-/help - Эта справка
-"""
+        text = (
+            "📚 **Как пользоваться ботом:**\n\n"
+            "1️⃣ **Подготовьте файл**\n"
+            "   • Создайте текстовый файл (.txt)\n"
+            "   • Каждая строка: логин:пароль\n"
+            "   • Пример: `email@gmail.com:password123`\n\n"
+            "2️⃣ **Отправьте файл**\n"
+            "   • Нажмите на скрепку 📎\n"
+            "   • Выберите ваш .txt файл\n"
+            "   • Отправьте боту\n\n"
+            "3️⃣ **Дождитесь результатов**\n"
+            "   • Бот покажет прогресс\n"
+            "   • После проверки придут файлы:\n"
+            "     - Валидные аккаунты\n"
+            "     - Аккаунты с плащами\n"
+            "     - Невалидные аккаунты\n\n"
+            "⚠️ **Важно:**\n"
+            "• Только старые аккаунты Mojang\n"
+            "• Microsoft не поддерживаются\n"
+            "• Файл не больше 5 МБ\n"
+            "• До 1000 аккаунтов за раз\n\n"
+            "📌 **Команды:**\n"
+            "/start - Главное меню\n"
+            "/stats - Статистика\n"
+            "/help - Эта справка"
+        )
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     
     elif query.data == 'format':
-        text = """
-📝 **Формат файла:**
+        text = (
+            "📝 **Формат файла:**\n\n"
+            "✅ **Правильный формат:**\n"
+            "```\n"
+            "player1@gmail.com:qwerty123\n"
+            "player2@yandex.ru:minecraft2024\n"
+            "player3@mail.ru:password123\n"
+            "```\n\n"
+            "❌ **Неправильный формат:**\n"
+            "```\n"
+            "player1@gmail.com qwerty123  (нет двоеточия)\n"
+            "player2:pass                 (неполный email)\n"
+            ":password123                 (нет логина)\n"
+            "login:                       (нет пароля)\n"
+            "```\n\n"
+            "📦 **Что вы получите:**\n"
+            "• **valid_accounts_*.txt** - все рабочие аккаунты\n"
+            "• **cape_accounts_*.txt** - аккаунты с плащами\n"
+            "• **invalid_accounts_*.txt** - нерабочие аккаунты\n\n"
+            "ℹ️ **Кодировка:** UTF-8 (обычные текстовые файлы)"
+        )
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
 
-✅ **Правильный формат:**
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /stats"""
+    uptime = datetime.now() - stats['start_time']
+    hours = int(uptime.seconds // 3600)
+    minutes = int((uptime.seconds // 60) % 60)
+    
+    text = (
+        f"📊 **Статистика бота:**\n\n"
+        f"📈 **Всего проверено:** {stats['total_checked']}\n"
+        f"✅ **Валидных:** {stats['valid_accounts']}\n"
+        f"❌ **Невалидных:** {stats['invalid_accounts']}\n"
+        f"🔥 **С плащами:** {stats['cape_found']}\n\n"
+        f"⏱ **Работает:** {hours}ч {minutes}мин\n"
+        f"📅 **Запущен:** {stats['start_time'].strftime('%d.%m.%Y %H:%M')}"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /help"""
+    text = (
+        "📚 **OptiFine Cape Checker Bot - Помощь**\n\n"
+        "🔍 **Что умеет бот:**\n"
+        "• Проверять логин:пароль аккаунтов Minecraft\n"
+        "• Определять наличие OptiFine плаща\n"
+        "• Показывать последний вход на серверы\n"
+        "• Автоматически сортировать результаты\n\n"
+        "📥 **Как использовать:**\n"
+        "1. Подготовьте .txt файл с аккаунтами\n"
+        "2. Каждая строка: логин:пароль\n"
+        "3. Отправьте файл боту\n"
+        "4. Получите 3 файла с результатами\n\n"
+        "⚡ **Советы:**\n"
+        "• Не отправляйте больше 1000 аккаунтов за раз\n"
+        "• Убедитесь, что файл в кодировке UTF-8\n"
+        "• Для Microsoft аккаунтов используйте другие инструменты\n\n"
+        "🆘 **Поддержка:**\n"
+        "Если бот не работает, проверьте:\n"
+        "• Правильность формата файла\n"
+        "• Наличие интернета\n"
+        "• Актуальность токена\n\n"
+        "👨‍💻 **Команды:**\n"
+        "/start - Главное меню\n"
+        "/stats - Статистика\n"
+        "/help - Эта справка"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка полученного файла"""
+    user_id = update.effective_user.id
+    
+    # Проверка доступа
+    if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+        await update.message.reply_text("❌ У вас нет доступа к этому боту.")
+        return
+    
+    # Получаем документ
+    document = update.message.document
+    
+    # Проверяем расширение
+    if not document.file_name.endswith('.txt'):
+        await update.message.reply_text(
+            "❌ **Ошибка:** Пожалуйста, отправьте файл с расширением .txt\n"
+            "📝 Поддерживаются только текстовые файлы.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Проверяем размер файла (макс 5 МБ)
+    if document.file_size > 5 * 1024 * 1024:
+        await update.message.reply_text(
+            "❌ **Ошибка:** Файл слишком большой!\n"
+            f"📦 Размер: {document.file_size / 1024 / 1024:.1f} МБ\n"
+            "⚠️ Максимальный размер: 5 МБ",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Скачиваем файл
+    try:
+        await update.message.reply_text(
+            f"📥 **Файл получен:** {document.file_name}\n"
+            f"📦 **Размер:** {document.file_size / 1024:.1f} КБ\n\n"
+            f"🔄 Начинаю обработку...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        file = await context.bot.get_file(document.file_id)
+        file_path = f"temp_{user_id}_{document.file_name}"
+        await file.download_to_drive(file_path)
+        
+        # Запускаем проверку
+        await process_accounts_file(file_path, update, context)
+        
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        await update.message.reply_text(
+            f"❌ **Ошибка при скачивании файла:** {str(e)}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ошибок"""
+    logger.error(f"Update {update} caused error {context.error}")
+    
+    try:
+        if update and update.message:
+            await update.message.reply_text(
+                "❌ **Произошла внутренняя ошибка.**\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except:
+        pass
+
+def main():
+    """Запуск бота"""
+    # Проверяем наличие токена
+    if not TOKEN:
+        logger.error("❌ BOT_TOKEN not set in environment variables!")
+        print("❌ ERROR: BOT_TOKEN not set!")
+        return
+    
+    # Проверяем админов
+    if not ADMIN_IDS:
+        logger.warning("⚠️ ADMIN_IDS not set - anyone can use the bot!")
+        print("⚠️ WARNING: No admin IDs set - anyone can use the bot!")
+    
+    print("=" * 50)
+    print("🚀 Starting OptiFine Cape Checker Bot...")
+    print(f"📊 Initial stats: {stats}")
+    print(f"👥 Admin IDs: {ADMIN_IDS if ADMIN_IDS else 'No admins set'}")
+    print("=" * 50)
+    
+    try:
+        # Создаем приложение
+        application = Application.builder().token(TOKEN).build()
+        
+        # Добавляем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CallbackQueryHandler(button_callback))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        
+        # Обработчик ошибок
+        application.add_error_handler(error_handler)
+        
+        # Запускаем бота
+        print("✅ Bot is running! Press Ctrl+C to stop.")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        print(f"❌ Fatal error: {e}")
+
+if __name__ == '__main__':
+    main()
