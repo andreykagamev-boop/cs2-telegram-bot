@@ -1,35 +1,45 @@
-FROM selenium/standalone-chrome:latest
+FROM python:3.11-slim
 
-USER root
+# Устанавливаем Chrome и ChromeDriver
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg2 \
+    unzip \
+    curl \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Chrome
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1) \
+    && wget -q -O /tmp/chromedriver.zip https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip \
+    && unzip /tmp/chromedriver.zip -d /tmp/ \
+    && mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
+    && chmod +x /usr/local/bin/chromedriver \
+    && rm /tmp/chromedriver.zip
 
 WORKDIR /app
 
-# Устанавливаем Python и зависимости
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-distutils \
-    python3-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Создаем виртуальное окружение с Python 3.11 (совместимая версия)
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Копируем зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Создаем директории
 RUN mkdir -p /app/temp /app/debug && chmod 777 /app/temp /app/debug
 
-# Копируем код
 COPY bot.py .
 
-# Возвращаем пользователя seluser
-USER seluser
+# Скрипт запуска с Xvfb
+RUN echo '#!/bin/bash\n\
+Xvfb :99 -screen 0 1920x1080x24 &\n\
+export DISPLAY=:99\n\
+python bot.py' > /app/start.sh && chmod +x /app/start.sh
 
-# Запускаем бота
-CMD ["python3", "/app/bot.py"]
+ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
+
+CMD ["/app/start.sh"]
