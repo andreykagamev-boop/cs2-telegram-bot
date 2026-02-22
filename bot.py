@@ -23,8 +23,8 @@ ADMIN_IDS = os.environ.get('ADMIN_IDS', '').split(',')
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS if id.strip()]
 ALLOWED_USERS = ADMIN_IDS.copy() if ADMIN_IDS else []
 
-# Статистика как на скрине
-stats = {
+# Статистика - ЭТО СЛОВАРЬ, а не функция!
+bot_stats = {
     'total_checked': 0,
     'valid_accounts': 0,
     'invalid_accounts': 0,
@@ -257,19 +257,19 @@ async def process_file(file_path, update, context):
                 results['valid'].append(result)
                 if result.get('has_cape'):
                     results['with_cape'].append(result)
-                    stats['cape_found'] += 1
-                stats['valid_accounts'] += 1
+                    bot_stats['cape_found'] += 1
+                bot_stats['valid_accounts'] += 1
             elif result['status'] == 'migrated':
                 results['migrated'].append(result)
-                stats['invalid_accounts'] += 1
+                bot_stats['invalid_accounts'] += 1
             elif result['status'] == 'invalid':
                 results['invalid'].append(result)
-                stats['invalid_accounts'] += 1
+                bot_stats['invalid_accounts'] += 1
             else:
                 results['error'].append(result)
-                stats['invalid_accounts'] += 1
+                bot_stats['invalid_accounts'] += 1
             
-            stats['total_checked'] += 1
+            bot_stats['total_checked'] += 1
             await asyncio.sleep(0.5)  # Пауза чтоб не забанили
         
         # Сохраняем результаты
@@ -316,6 +316,35 @@ async def process_file(file_path, update, context):
                 )
             os.remove(valid_file)
         
+        # 3. Битые
+        if results['invalid'] or results['migrated'] or results['error']:
+            invalid_file = f"invalid_{timestamp}.txt"
+            async with aiofiles.open(invalid_file, 'w', encoding='utf-8') as f:
+                await f.write("НЕРАБОЧИЕ АККАУНТЫ\n\n")
+                
+                if results['invalid']:
+                    await f.write("Неверный логин/пароль:\n")
+                    for acc in results['invalid'][:50]:
+                        await f.write(f"{acc['login']}:{acc['password']} - {acc.get('error', 'Ошибка')}\n")
+                
+                if results['migrated']:
+                    await f.write("\nВ Microsoft:\n")
+                    for acc in results['migrated'][:50]:
+                        await f.write(f"{acc['login']}:{acc['password']}\n")
+                
+                if results['error']:
+                    await f.write("\nОшибки:\n")
+                    for acc in results['error'][:50]:
+                        await f.write(f"{acc['login']}:{acc['password']} - {acc.get('error', 'Ошибка')}\n")
+            
+            with open(invalid_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=invalid_file,
+                    caption=f"⚠️ Битые: {len(results['invalid']) + len(results['migrated']) + len(results['error'])}"
+                )
+            os.remove(invalid_file)
+        
         # Итоговая статистика как на скрине
         elapsed_time = time.time() - start_time
         minutes = int(elapsed_time // 60)
@@ -323,7 +352,7 @@ async def process_file(file_path, update, context):
         
         stats_text = (
             f"# Бот Каппер - Бармен\n"
-            f"## {stats['total_checked']}\n\n"
+            f"## {bot_stats['total_checked']}\n\n"
             f"- Всего проверено: {total}\n"
             f"- Валидных: {len(results['valid'])}\n"
             f"- Невалидных: {len(results['invalid'])}\n"
@@ -353,37 +382,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Статистика как на скрине
-    uptime = datetime.now() - stats['start_time']
+    uptime = datetime.now() - bot_stats['start_time']
     hours = int(uptime.seconds // 3600)
     minutes = int((uptime.seconds // 60) % 60)
     
     text = (
         f"# Бот Каппер - Бармен\n"
-        f"## {stats['total_checked']}\n\n"
-        f"- Всего проверено: {stats['total_checked']}\n"
-        f"- Валидных: {stats['valid_accounts']}\n"
-        f"- Невалидных: {stats['invalid_accounts']}\n"
-        f"- С плащами: {stats['cape_found']}\n\n"
+        f"## {bot_stats['total_checked']}\n\n"
+        f"- Всего проверено: {bot_stats['total_checked']}\n"
+        f"- Валидных: {bot_stats['valid_accounts']}\n"
+        f"- Невалидных: {bot_stats['invalid_accounts']}\n"
+        f"- С плащами: {bot_stats['cape_found']}\n\n"
         f"---\n\n"
         f"### Работает: {hours}ч {minutes}мин\n"
-        f"#### Запущен: {stats['start_time'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"#### Запущен: {bot_stats['start_time'].strftime('%d.%m.%Y %H:%M')}\n\n"
         f"📥 Отправь .txt файл с логин:пароль"
     )
     
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика"""
-    uptime = datetime.now() - stats['start_time']
+    uptime = datetime.now() - bot_stats['start_time']
     hours = int(uptime.seconds // 3600)
     minutes = int((uptime.seconds // 60) % 60)
     
     text = (
         f"📊 **Статистика**\n\n"
-        f"Всего: {stats['total_checked']}\n"
-        f"✅ Валидных: {stats['valid_accounts']}\n"
-        f"❌ Невалидных: {stats['invalid_accounts']}\n"
-        f"🔥 С плащами: {stats['cape_found']}\n\n"
+        f"Всего: {bot_stats['total_checked']}\n"
+        f"✅ Валидных: {bot_stats['valid_accounts']}\n"
+        f"❌ Невалидных: {bot_stats['invalid_accounts']}\n"
+        f"🔥 С плащами: {bot_stats['cape_found']}\n\n"
         f"⏱ Работаю: {hours}ч {minutes}мин"
     )
     
@@ -439,7 +468,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     print("✅ Бот работает!")
