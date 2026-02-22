@@ -1,9 +1,4 @@
+undetected-chromedriver==3.5.4
+selenium==4.15.2
 python-telegram-bot==20.7
 aiofiles==23.2.1
-selenium==4.15.2
-beautifulsoup4==4.12.2
-requests==2.31.0
-selenium-stealth==1.0.6
-webdriver-manager==4.0.1
-setuptools==69.0.3  # Добавляем setuptools для совместимости
-wheel==0.42.0
