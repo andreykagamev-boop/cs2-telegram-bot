@@ -1,5 +1,4 @@
 python-telegram-bot==20.7
-selenium==4.15.0
+selenium==4.16.0
 aiofiles==23.2.1
 requests==2.31.0
-webdriver-manager==4.0.1
