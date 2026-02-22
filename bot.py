@@ -5,6 +5,7 @@ import asyncio
 import aiofiles
 import time
 import random
+import subprocess
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -60,8 +61,19 @@ class OptifineChecker:
         self.init_driver()
     
     def init_driver(self):
-        """Инициализация undetected-chromedriver с максимальной маскировкой"""
+        """Инициализация undetected-chromedriver с автоматическим определением версии"""
         try:
+            logger.info("🔍 Определяю версию Chrome...")
+            
+            # Получаем версию Chrome автоматически
+            try:
+                chrome_version_output = subprocess.check_output(['google-chrome', '--version']).decode().strip()
+                chrome_version = chrome_version_output.split(' ')[-1].split('.')[0]
+                logger.info(f"✅ Обнаружена версия Chrome: {chrome_version} (полная: {chrome_version_output})")
+            except Exception as e:
+                chrome_version = 145  # Если не удалось определить, ставим последнюю известную
+                logger.warning(f"⚠️ Не удалось определить версию Chrome, использую {chrome_version}. Ошибка: {e}")
+            
             # Настройки для максимальной маскировки
             options = uc.ChromeOptions()
             
@@ -83,10 +95,9 @@ class OptifineChecker:
             
             # Языковые настройки
             options.add_argument('--lang=en-US,en;q=0.9')
-            options.add_argument('--accept-lang=en-US,en;q=0.9')
             
-            # Реальный User-Agent (Windows 11, Chrome 122)
-            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+            # Реальный User-Agent с правильной версией Chrome
+            options.add_argument(f'--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version}.0.0.0 Safari/537.36')
             
             # Отключаем лишние логи
             options.add_argument('--disable-logging')
@@ -97,10 +108,18 @@ class OptifineChecker:
             options.add_argument('--ignore-certificate-errors')
             options.add_argument('--ignore-ssl-errors')
             
-            # Запускаем undetected driver
+            # ВАЖНО: Настройка для работы в Railway
+            options.add_argument('--remote-debugging-port=9222')
+            
+            # Устанавливаем DISPLAY для Xvfb
+            os.environ['DISPLAY'] = ':99'
+            
+            # Запускаем undetected driver с правильной версией
+            logger.info(f"🚀 Запускаю undetected_chromedriver с версией Chrome {chrome_version}...")
+            
             self.driver = uc.Chrome(
                 options=options,
-                version_main=122,  # Версия Chrome
+                version_main=int(chrome_version),
                 headless=True,
                 user_data_dir=None,
                 driver_executable_path=None
