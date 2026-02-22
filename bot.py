@@ -66,6 +66,7 @@ class OptifineChecker:
         self.driver = None
         self.session_id = None
         self.xvfb_process = None
+        self.cloudflare_confirmed = False
         logger.info("🚀 Инициализация OptifineChecker...")
     
     def start_xvfb(self):
@@ -170,13 +171,6 @@ class OptifineChecker:
             # Используем реальный профиль
             options.add_argument(f'--user-data-dir={user_data_dir}')
             options.add_argument('--profile-directory=Default')
-            
-            # Дополнительные настройки для видимого режима
-            if not headless:
-                options.add_argument('--disable-blink-features=AutomationControlled')
-                options.add_argument('--disable-features=VizDisplayCompositor')
-                options.add_argument('--disable-features=IsolateOrigins')
-                options.add_argument('--disable-features=site-per-process')
             
             logger.info(f"🚀 Запускаю undetected_chromedriver в режиме {'headless' if headless else 'visible'}...")
             
@@ -290,33 +284,41 @@ class OptifineChecker:
         """Ожидает ручного подтверждения от пользователя"""
         
         start_time = time.time()
-        check_interval = 5
+        check_interval = 2
+        
+        # Отправляем начальное сообщение
+        status_msg = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"⏳ **Ожидание подтверждения...** (0с)"
+        )
+        
+        last_status_time = 0
         
         while time.time() - start_time < timeout:
             try:
-                # Проверяем, пройдена ли Cloudflare
-                if self.check_cloudflare_passed():
-                    logger.info(f"✅ Cloudflare пройден для сессии {session_id}")
+                # Проверяем флаг подтверждения
+                if self.cloudflare_confirmed:
+                    logger.info(f"✅ Получено ручное подтверждение для сессии {session_id}")
+                    await status_msg.edit_text("✅ **Cloudflare пройден! Продолжаю...**")
                     return True
                 
-                # Обновляем страницу каждые 30 секунд
-                elapsed = int(time.time() - start_time)
-                if elapsed % 30 == 0 and elapsed > 0:
-                    logger.info(f"🔄 Обновляю страницу (прошло {elapsed}с)")
-                    try:
-                        self.driver.refresh()
-                    except:
-                        pass
+                # Автоматическая проверка
+                if self.check_cloudflare_passed():
+                    logger.info(f"✅ Cloudflare пройден автоматически для сессии {session_id}")
+                    await status_msg.edit_text("✅ **Cloudflare пройден автоматически! Продолжаю...**")
+                    return True
                 
-                # Отправляем статус каждые 30 секунд
-                if elapsed % 30 == 0 and elapsed > 0:
+                # Обновляем статус каждые 10 секунд
+                elapsed = int(time.time() - start_time)
+                if elapsed - last_status_time >= 10:
                     try:
-                        await update.message.reply_text(
+                        await status_msg.edit_text(
                             f"⏳ **Ожидание подтверждения...**\n"
                             f"Прошло: {elapsed}с\n"
                             f"Осталось: {timeout - elapsed}с\n\n"
-                            f"🆔 ID: `{session_id}`"
+                            f"✅ После прохождения капчи нажми кнопку"
                         )
+                        last_status_time = elapsed
                     except:
                         pass
                 
@@ -327,13 +329,83 @@ class OptifineChecker:
                 await asyncio.sleep(check_interval)
         
         logger.warning(f"⚠️ Таймаут ожидания для сессии {session_id}")
+        await status_msg.edit_text("❌ **Время ожидания истекло**")
         return False
+    
+    async def handle_confirmation_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает нажатия кнопок подтверждения"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        session_id = data.split('_')[-1]
+        
+        if session_id not in pending_confirmations:
+            await query.edit_message_text("❌ **Сессия устарела или не найдена**")
+            return
+        
+        session_info = pending_confirmations[session_id]
+        
+        # Проверяем, что это тот же пользователь
+        if query.from_user.id != session_info['user_id']:
+            await query.answer("❌ Это не ваша сессия!", show_alert=True)
+            return
+        
+        if data.startswith('cf_done'):
+            # Пользователь утверждает, что прошел капчу
+            await query.edit_message_text("✅ **Проверяю...**")
+            
+            # Проверяем, действительно ли пройдена Cloudflare
+            checker = session_info['checker']
+            if checker.check_cloudflare_passed():
+                checker.cloudflare_confirmed = True
+                await query.edit_message_text(
+                    "✅ **Cloudflare успешно пройден!**\n\n"
+                    "Продолжаю проверку аккаунтов..."
+                )
+            else:
+                # Делаем скриншот для диагностики
+                try:
+                    checker.driver.save_screenshot(f'/app/debug/cf_failed_{session_id}.png')
+                except:
+                    pass
+                
+                await query.edit_message_text(
+                    "❌ **Cloudflare все еще активен**\n\n"
+                    "Попробуй еще раз:\n"
+                    "1️⃣ Нажми на галочку\n"
+                    "2️⃣ Подожди 2-3 секунды\n"
+                    "3️⃣ Снова нажми кнопку\n\n"
+                    "Или нажми кнопку обновления"
+                )
+        
+        elif data.startswith('cf_refresh'):
+            # Обновляем страницу
+            await query.edit_message_text("🔄 **Обновляю страницу...**")
+            try:
+                checker = session_info['checker']
+                checker.driver.refresh()
+                time.sleep(3)
+                await query.edit_message_text(
+                    f"✅ **Страница обновлена**\n\n"
+                    f"Попробуй пройти капчу и нажми кнопку подтверждения"
+                )
+            except Exception as e:
+                await query.edit_message_text(f"❌ **Ошибка при обновлении:** {str(e)[:100]}")
+        
+        elif data.startswith('cf_cancel'):
+            # Отменяем операцию
+            await query.edit_message_text("❌ **Операция отменена**")
+            checker = session_info['checker']
+            checker.cloudflare_confirmed = False
+            del pending_confirmations[session_id]
     
     async def setup_manual_cloudflare(self, update, context):
         """Настраивает ручное прохождение Cloudflare"""
         
         # Генерируем уникальный ID сессии
         session_id = f"{update.effective_user.id}_{int(time.time())}"
+        self.cloudflare_confirmed = False
         
         try:
             # Открываем страницу входа
@@ -388,71 +460,14 @@ class OptifineChecker:
             # Ожидаем подтверждения
             result = await self.wait_for_manual_confirmation(update, context, session_id)
             
-            # Удаляем из ожидающих
-            if session_id in pending_confirmations:
-                del pending_confirmations[session_id]
-            
             return result
             
         except Exception as e:
             logger.error(f"❌ Ошибка при настройке ручного Cloudflare: {e}")
+            return False
+        finally:
             if session_id in pending_confirmations:
                 del pending_confirmations[session_id]
-            return False
-    
-    async def handle_confirmation_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает нажатия кнопок подтверждения"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        session_id = data.split('_')[-1]
-        
-        if session_id not in pending_confirmations:
-            await query.edit_message_text("❌ **Сессия устарела или не найдена**")
-            return
-        
-        session_info = pending_confirmations[session_id]
-        
-        # Проверяем, что это тот же пользователь
-        if query.from_user.id != session_info['user_id']:
-            await query.answer("❌ Это не ваша сессия!", show_alert=True)
-            return
-        
-        if data.startswith('cf_done'):
-            # Пользователь утверждает, что прошел капчу
-            await query.edit_message_text("✅ **Проверяю...**")
-            
-            # Проверяем, действительно ли пройдена Cloudflare
-            if session_info['checker'].check_cloudflare_passed():
-                await query.edit_message_text(
-                    "✅ **Cloudflare успешно пройден!**\n\n"
-                    "Продолжаю проверку аккаунтов..."
-                )
-                return True
-            else:
-                await query.edit_message_text(
-                    "❌ **Cloudflare все еще активен**\n\n"
-                    "Попробуй еще раз нажать на галочку и обновить страницу."
-                )
-        
-        elif data.startswith('cf_refresh'):
-            # Обновляем страницу
-            await query.edit_message_text("🔄 **Обновляю страницу...**")
-            try:
-                session_info['checker'].driver.refresh()
-                await query.edit_message_text(
-                    f"✅ **Страница обновлена**\n\n"
-                    f"Текущий URL:\n"
-                    f"{session_info['checker'].driver.current_url}"
-                )
-            except Exception as e:
-                await query.edit_message_text(f"❌ **Ошибка при обновлении:** {str(e)[:100]}")
-        
-        elif data.startswith('cf_cancel'):
-            # Отменяем операцию
-            await query.edit_message_text("❌ **Операция отменена**")
-            del pending_confirmations[session_id]
     
     async def check_account(self, login: str, password: str) -> Dict:
         """Проверка аккаунта"""
@@ -787,6 +802,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нет доступа**")
         return
     
+    uptime = datetime.now() - bot_stats['start_time']
+    hours = int(uptime.seconds // 3600)
+    minutes = int((uptime.seconds // 60) % 60)
+    
     keyboard = [
         [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
         [InlineKeyboardButton("❓ Помощь", callback_data='help')]
@@ -798,9 +817,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"1️⃣ Отправляешь .txt файл с аккаунтами\n"
         f"2️⃣ Бот открывает страницу с Cloudflare\n"
         f"3️⃣ Ты вручную нажимаешь на галочку\n"
-        f"4️⃣ Бот продолжает проверку автоматически\n\n"
+        f"4️⃣ Нажимаешь кнопку \"✅ Я прошел капчу\"\n"
+        f"5️⃣ Бот продолжает проверку автоматически\n\n"
         f"📥 **Отправь .txt файл** с логинами:паролями\n\n"
-        f"🔧 **Для админов:** /debug",
+        f"📊 **Статистика:**\n"
+        f"• Проверено: {bot_stats['total']}\n"
+        f"• Найдено рабочих: {bot_stats['valid']}\n\n"
+        f"🔧 **Для админов:** /debug\n"
+        f"⏱ **Аптайм:** {hours}ч {minutes}мин",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -824,9 +848,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(
             f"📊 **СТАТИСТИКА**\n\n"
-            f"Всего: {bot_stats['total']}\n"
+            f"Всего проверено: {bot_stats['total']}\n"
             f"✅ Рабочих: {bot_stats['valid']}\n"
-            f"❌ Нерабочих: {bot_stats['invalid']}\n"
+            f"❌ Нерабочих: {bot_stats['invalid']}\n\n"
             f"⏱ Аптайм: {hours}ч {minutes}мин"
         )
     
@@ -870,6 +894,9 @@ def main():
     """Запуск"""
     print("=" * 50)
     print("🚀 ЗАПУСК OPTIFINE CHECKER (РУЧНОЙ РЕЖИМ)")
+    print("=" * 50)
+    print(f"📁 Директория отладки: /app/debug")
+    print(f"👑 Admin IDs: {ADMIN_IDS}")
     print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
