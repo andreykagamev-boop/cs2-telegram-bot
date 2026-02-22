@@ -61,115 +61,6 @@ class OptifineChecker:
         logger.info("🚀 Инициализация OptifineChecker с undetected_chromedriver...")
         self.init_driver()
     
-    def apply_enhanced_stealth(self):
-        """Усиленная маскировка для обхода Turnstile"""
-        try:
-            # Маскировка через CDP команды
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    // Переопределяем navigator свойства
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    
-                    // Маскировка разрешения экрана
-                    Object.defineProperty(screen, 'width', {get: () => 1920});
-                    Object.defineProperty(screen, 'height', {get: () => 1080});
-                    Object.defineProperty(screen, 'availWidth', {get: () => 1920});
-                    Object.defineProperty(screen, 'availHeight', {get: () => 1040});
-                    Object.defineProperty(screen, 'colorDepth', {get: () => 24});
-                    Object.defineProperty(screen, 'pixelDepth', {get: () => 24});
-                    
-                    // Маскировка плагинов
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
-                            return {
-                                length: 5,
-                                0: {name: 'Chrome PDF Plugin'},
-                                1: {name: 'Chrome PDF Viewer'},
-                                2: {name: 'Native Client'},
-                                3: {name: 'Widevine Content Decryption Module'},
-                                4: {name: 'Shockwave Flash'}
-                            }
-                        }
-                    });
-                    
-                    // Маскировка языков
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-US', 'en', 'ru']
-                    });
-                    
-                    // Маскировка hardware
-                    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                    Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
-                    
-                    // Маскировка WebGL
-                    const getParameter = WebGLRenderingContext.prototype.getParameter;
-                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                        // UNMASKED_VENDOR_WEBGL
-                        if (parameter === 37445) {
-                            return 'Intel Inc.';
-                        }
-                        // UNMASKED_RENDERER_WEBGL
-                        if (parameter === 37446) {
-                            return 'Intel Iris OpenGL Engine';
-                        }
-                        return getParameter(parameter);
-                    };
-                    
-                    // Добавляем Chrome объект
-                    window.chrome = {
-                        runtime: {},
-                        loadTimes: function() {},
-                        csi: function() {},
-                        app: {}
-                    };
-                    
-                    // Маскировка permissions
-                    const originalQuery = navigator.permissions.query;
-                    navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({state: 'prompt'}) :
-                            originalQuery(parameters)
-                    );
-                    
-                    // Добавляем WebGL vendor
-                    const getExtension = WebGLRenderingContext.prototype.getExtension;
-                    WebGLRenderingContext.prototype.getExtension = function(name) {
-                        const extension = getExtension.call(this, name);
-                        if (name === 'WEBGL_debug_renderer_info') {
-                            return {
-                                UNMASKED_VENDOR_WEBGL: 0x9245,
-                                UNMASKED_RENDERER_WEBGL: 0x9246,
-                                getParameter: function(param) {
-                                    if (param === 0x9245) return 'Intel Inc.';
-                                    if (param === 0x9246) return 'Intel Iris OpenGL Engine';
-                                    return null;
-                                }
-                            };
-                        }
-                        return extension;
-                    };
-                    
-                    // Маскировка времени
-                    Object.defineProperty(Date.prototype, 'getTimezoneOffset', {
-                        get: () => -180
-                    });
-                '''
-            })
-            
-            # Дополнительные заголовки
-            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-                "acceptLanguage": 'en-US,en;q=0.9,ru;q=0.8',
-                "platform": 'Win32'
-            })
-            
-            logger.info("✅ Enhanced stealth применен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при применении enhanced stealth: {e}")
-    
     def init_driver(self):
         """Инициализация undetected-chromedriver с автоматическим определением версии"""
         try:
@@ -242,12 +133,17 @@ class OptifineChecker:
                 driver_executable_path=None
             )
             
-            # Применяем усиленную маскировку
-            self.apply_enhanced_stealth()
-            
             # Устанавливаем таймауты
             self.driver.set_page_load_timeout(60)
             self.driver.implicitly_wait(20)
+            
+            # Дополнительная маскировка
+            self.driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                window.chrome = {runtime: {}};
+            """)
             
             logger.info("✅ Undetected driver успешно инициализирован")
             return True
@@ -262,23 +158,23 @@ class OptifineChecker:
         time.sleep(random.uniform(min_sec, max_sec))
     
     def handle_cloudflare(self, timeout=180):
-        """Продвинутая обработка Cloudflare Turnstile"""
+        """АВТОМАТИЧЕСКОЕ НАЖАТИЕ НА ГАЛОЧКУ TURNSTILE"""
         logger.info("🛡️ Начинаю обработку Cloudflare Turnstile...")
         start_time = time.time()
         
-        # Ждем начальной загрузки
+        # Ждем загрузки страницы
         time.sleep(5)
         
-        # Счетчик для периодического обновления
-        refresh_counter = 0
+        # Флаг, что мы уже кликнули
+        clicked = False
         
         while time.time() - start_time < timeout:
             try:
-                page_source = self.driver.page_source
                 current_url = self.driver.current_url
                 page_title = self.driver.title.lower()
+                page_source = self.driver.page_source
                 
-                # Проверка на успешный проход
+                # Проверяем, не проскочили ли мы Cloudflare
                 if 'login' in current_url and 'just a moment' not in page_title:
                     # Проверяем наличие полей ввода
                     inputs = self.driver.find_elements(By.TAG_NAME, "input")
@@ -289,134 +185,129 @@ class OptifineChecker:
                         logger.info("✅ Cloudflare успешно пройден! Найдены поля ввода.")
                         return True
                 
-                # Специфичная обработка Turnstile
-                if 'turnstile' in page_source.lower() or 'cf-chl-widget' in page_source or 'cf-turnstile' in page_source:
-                    logger.info("🔄 Обнаружена Turnstile капча, жду автоматического решения...")
+                # Если еще не кликали, ищем галочку
+                if not clicked:
+                    # Ищем все iframe на странице
+                    iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                    logger.info(f"🔍 Найдено iframe: {len(iframes)}")
                     
-                    # Пробуем найти и кликнуть на чекбокс если он есть
-                    try:
-                        # Ищем iframe с капчей
-                        iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-                        for iframe in iframes:
+                    for iframe in iframes:
+                        try:
+                            # Получаем src iframe
                             src = iframe.get_attribute('src') or ''
+                            
+                            # Проверяем, это Turnstile?
                             if 'challenges.cloudflare.com' in src or 'turnstile' in src:
-                                logger.info("🔄 Найден iframe Turnstile, пробую взаимодействовать")
+                                logger.info(f"🎯 Найден Turnstile iframe: {src[:100]}")
                                 
-                                # Переключаемся в iframe
+                                # Пытаемся переключиться в iframe
                                 self.driver.switch_to.frame(iframe)
-                                time.sleep(1)
+                                logger.info("📦 Переключился в iframe")
                                 
-                                # Ищем чекбокс
-                                checkboxes = self.driver.find_elements(By.CSS_SELECTOR, 
-                                    "input[type='checkbox'], [role='checkbox'], .cf-turnstile-checkbox, [aria-label*='checkbox']")
+                                # Ищем галочку разными способами
+                                checkbox = None
                                 
-                                for cb in checkboxes:
-                                    if cb.is_displayed():
-                                        logger.info("🖱️ Нажимаю чекбокс в iframe")
+                                # Способ 1: По типу checkbox
+                                checkbox = self.driver.find_elements(By.CSS_SELECTOR, 
+                                    "input[type='checkbox']")
+                                
+                                if not checkbox:
+                                    # Способ 2: По роли
+                                    checkbox = self.driver.find_elements(By.CSS_SELECTOR, 
+                                        "[role='checkbox']")
+                                
+                                if not checkbox:
+                                    # Способ 3: По классу
+                                    checkbox = self.driver.find_elements(By.CSS_SELECTOR, 
+                                        ".cf-turnstile-checkbox, .chakra-checkbox__input, .checkbox")
+                                
+                                if not checkbox:
+                                    # Способ 4: По aria-label
+                                    checkbox = self.driver.find_elements(By.CSS_SELECTOR, 
+                                        "[aria-label*='checkbox'], [aria-label*='Checkbox']")
+                                
+                                if not checkbox:
+                                    # Способ 5: По тегу label с классом
+                                    checkbox = self.driver.find_elements(By.CSS_SELECTOR, 
+                                        "label[class*='checkbox']")
+                                
+                                if checkbox and len(checkbox) > 0:
+                                    cb = checkbox[0]
+                                    if cb.is_displayed() and cb.is_enabled():
+                                        logger.info("✅ НАШЕЛ ГАЛОЧКУ! Пробую нажать...")
+                                        
+                                        # Пробуем разные способы нажатия
                                         try:
                                             cb.click()
+                                            logger.info("🖱️ Нажал через click()")
+                                            clicked = True
                                         except:
-                                            self.driver.execute_script("arguments[0].click();", cb)
-                                        time.sleep(2)
+                                            try:
+                                                self.driver.execute_script("arguments[0].click();", cb)
+                                                logger.info("🖱️ Нажал через JavaScript")
+                                                clicked = True
+                                            except Exception as e:
+                                                logger.error(f"❌ Не удалось нажать: {e}")
+                                        
+                                        # Ждем после нажатия
+                                        time.sleep(3)
+                                else:
+                                    logger.warning("❌ Не нашел галочку в iframe")
                                 
                                 # Возвращаемся в основной документ
                                 self.driver.switch_to.default_content()
-                    except Exception as e:
-                        logger.debug(f"Ошибка при работе с iframe: {e}")
-                        self.driver.switch_to.default_content()
-                    
-                    # Ждем автоматического решения (до 45 секунд)
-                    for i in range(45):
-                        time.sleep(1)
-                        
-                        # Проверяем наличие токена
+                                
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка при работе с iframe: {e}")
+                            self.driver.switch_to.default_content()
+                
+                # Если кликнули, но все еще на Cloudflare - ждем
+                if clicked:
+                    # Проверяем, появился ли токен
+                    try:
                         token_inputs = self.driver.find_elements(By.CSS_SELECTOR, 
                             "input[name='cf-turnstile-response'], input[id*='cf-chl-widget']")
                         
                         for token in token_inputs:
                             token_value = token.get_attribute('value')
                             if token_value and len(token_value) > 10:
-                                logger.info(f"✅ Turnstile токен получен через {i+1}с")
+                                logger.info(f"✅ Токен получен! Длина: {len(token_value)}")
                                 
-                                # Пробуем найти и отправить форму
+                                # Пробуем отправить форму
                                 try:
-                                    # Ищем кнопку submit
                                     submit_btn = self.driver.find_elements(By.CSS_SELECTOR, 
-                                        "button[type='submit'], input[type='submit'], .ctp-button, #challenge-form button")
+                                        "button[type='submit'], input[type='submit'], .ctp-button")
                                     
                                     if submit_btn and submit_btn[0].is_displayed():
                                         logger.info("🖱️ Нажимаю кнопку submit")
-                                        try:
-                                            submit_btn[0].click()
-                                        except:
-                                            self.driver.execute_script("arguments[0].click();", submit_btn[0])
-                                    
-                                    # Если нет кнопки, пробуем отправить форму
-                                    else:
-                                        forms = self.driver.find_elements(By.TAG_NAME, "form")
-                                        for form in forms:
-                                            if form.is_displayed():
-                                                logger.info("📝 Отправляю форму")
-                                                self.driver.execute_script("arguments[0].submit();", form)
-                                                break
-                                except Exception as e:
-                                    logger.debug(f"Ошибка при отправке формы: {e}")
-                                
-                                time.sleep(3)
-                                break
-                        
-                        # Если URL изменился на login - успех
-                        if 'login' in self.driver.current_url and 'just a moment' not in self.driver.title.lower():
-                            break
+                                        submit_btn[0].click()
+                                        time.sleep(3)
+                                except:
+                                    pass
+                    except:
+                        pass
                 
-                # Проверка наличия iframe с капчей (общая)
-                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-                for iframe in iframes:
-                    src = iframe.get_attribute('src') or ''
-                    if 'challenges.cloudflare.com' in src:
-                        logger.info("🔄 Найден iframe Cloudflare, пробую взаимодействовать")
-                        
-                        try:
-                            self.driver.switch_to.frame(iframe)
-                            
-                            # Ищем чекбокс или кнопку
-                            checkboxes = self.driver.find_elements(By.CSS_SELECTOR, 
-                                "[type='checkbox'], [role='checkbox'], .cf-turnstile-checkbox, [aria-label*='checkbox']")
-                            
-                            for cb in checkboxes:
-                                if cb.is_displayed():
-                                    logger.info("🖱️ Нажимаю чекбокс в iframe")
-                                    try:
-                                        cb.click()
-                                    except:
-                                        self.driver.execute_script("arguments[0].click();", cb)
-                                    time.sleep(2)
-                            
-                            self.driver.switch_to.default_content()
-                        except Exception as e:
-                            logger.debug(f"Ошибка в iframe: {e}")
-                            self.driver.switch_to.default_content()
-                
-                # Периодическое обновление если долго висит
+                # Обновляем страницу если долго висим (каждые 45 сек, макс 3 раза)
                 elapsed = time.time() - start_time
-                if elapsed > 30 and elapsed % 30 < 2:
-                    refresh_counter += 1
-                    if refresh_counter <= 3:  # Максимум 3 обновления
-                        logger.info(f"🔄 Пробую обновить страницу (попытка {refresh_counter}/3)")
+                if elapsed > 45 and int(elapsed) % 45 < 2 and elapsed < 150:
+                    if not clicked:
+                        logger.info("🔄 Обновляю страницу (нет галочки)")
                         self.driver.refresh()
                         time.sleep(5)
                 
                 # Логирование прогресса
                 elapsed_int = int(elapsed)
-                if elapsed_int % 20 == 0:
-                    logger.info(f"⏳ Ожидание Cloudflare... {elapsed_int}/{timeout} сек")
+                if elapsed_int % 30 == 0:
+                    status = "✅ Кликнул" if clicked else "⏳ Ищу галочку"
+                    logger.info(f"⏳ {elapsed_int}/{timeout} сек - {status}")
+                
+                time.sleep(1)
                 
             except Exception as e:
-                logger.debug(f"Ошибка в цикле обработки Cloudflare: {e}")
-            
-            time.sleep(1)
+                logger.error(f"❌ Ошибка в основном цикле: {e}")
+                time.sleep(2)
         
-        # Финальная отладка при неудаче
+        # Если не прошли Cloudflare - сохраняем отладку
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = f"/app/debug/cloudflare_failed_{timestamp}.png"
@@ -426,8 +317,7 @@ class OptifineChecker:
             with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(self.driver.page_source)
             
-            logger.info(f"📸 Сохранен скриншот ошибки Cloudflare: {timestamp}")
-            logger.info(f"📄 Сохранен HTML страницы: {timestamp}")
+            logger.info(f"📸 Сохранен скриншот: {timestamp}")
         except Exception as e:
             logger.error(f"❌ Ошибка при сохранении отладки: {e}")
         
