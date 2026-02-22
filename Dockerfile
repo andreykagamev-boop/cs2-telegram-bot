@@ -1,13 +1,24 @@
 FROM python:3.11-slim
 
-# Устанавливаем Chromium (он уже включает ChromeDriver)
+# Устанавливаем Chrome и зависимости
 RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
+    wget \
+    gnupg \
+    unzip \
+    curl \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Проверяем установку
-RUN chromium --version && chromedriver --version
+# Устанавливаем ChromeDriver
+RUN CHROME_DRIVER_VERSION=114.0.5735.90 \
+    && wget -q "https://chromedriver.storage.googleapis.com/${CHROME_DRIVER_VERSION}/chromedriver_linux64.zip" \
+    && unzip chromedriver_linux64.zip \
+    && mv chromedriver /usr/local/bin/ \
+    && chmod +x /usr/local/bin/chromedriver \
+    && rm chromedriver_linux64.zip
 
 WORKDIR /app
 
