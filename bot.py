@@ -6,6 +6,7 @@ import aiofiles
 import time
 import random
 import subprocess
+import tempfile
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -60,6 +61,115 @@ class OptifineChecker:
         logger.info("🚀 Инициализация OptifineChecker с undetected_chromedriver...")
         self.init_driver()
     
+    def apply_enhanced_stealth(self):
+        """Усиленная маскировка для обхода Turnstile"""
+        try:
+            # Маскировка через CDP команды
+            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    // Переопределяем navigator свойства
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // Маскировка разрешения экрана
+                    Object.defineProperty(screen, 'width', {get: () => 1920});
+                    Object.defineProperty(screen, 'height', {get: () => 1080});
+                    Object.defineProperty(screen, 'availWidth', {get: () => 1920});
+                    Object.defineProperty(screen, 'availHeight', {get: () => 1040});
+                    Object.defineProperty(screen, 'colorDepth', {get: () => 24});
+                    Object.defineProperty(screen, 'pixelDepth', {get: () => 24});
+                    
+                    // Маскировка плагинов
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => {
+                            return {
+                                length: 5,
+                                0: {name: 'Chrome PDF Plugin'},
+                                1: {name: 'Chrome PDF Viewer'},
+                                2: {name: 'Native Client'},
+                                3: {name: 'Widevine Content Decryption Module'},
+                                4: {name: 'Shockwave Flash'}
+                            }
+                        }
+                    });
+                    
+                    // Маскировка языков
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en', 'ru']
+                    });
+                    
+                    // Маскировка hardware
+                    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+                    Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
+                    
+                    // Маскировка WebGL
+                    const getParameter = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                        // UNMASKED_VENDOR_WEBGL
+                        if (parameter === 37445) {
+                            return 'Intel Inc.';
+                        }
+                        // UNMASKED_RENDERER_WEBGL
+                        if (parameter === 37446) {
+                            return 'Intel Iris OpenGL Engine';
+                        }
+                        return getParameter(parameter);
+                    };
+                    
+                    // Добавляем Chrome объект
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                    
+                    // Маскировка permissions
+                    const originalQuery = navigator.permissions.query;
+                    navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({state: 'prompt'}) :
+                            originalQuery(parameters)
+                    );
+                    
+                    // Добавляем WebGL vendor
+                    const getExtension = WebGLRenderingContext.prototype.getExtension;
+                    WebGLRenderingContext.prototype.getExtension = function(name) {
+                        const extension = getExtension.call(this, name);
+                        if (name === 'WEBGL_debug_renderer_info') {
+                            return {
+                                UNMASKED_VENDOR_WEBGL: 0x9245,
+                                UNMASKED_RENDERER_WEBGL: 0x9246,
+                                getParameter: function(param) {
+                                    if (param === 0x9245) return 'Intel Inc.';
+                                    if (param === 0x9246) return 'Intel Iris OpenGL Engine';
+                                    return null;
+                                }
+                            };
+                        }
+                        return extension;
+                    };
+                    
+                    // Маскировка времени
+                    Object.defineProperty(Date.prototype, 'getTimezoneOffset', {
+                        get: () => -180
+                    });
+                '''
+            })
+            
+            # Дополнительные заголовки
+            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+                "acceptLanguage": 'en-US,en;q=0.9,ru;q=0.8',
+                "platform": 'Win32'
+            })
+            
+            logger.info("✅ Enhanced stealth применен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при применении enhanced stealth: {e}")
+    
     def init_driver(self):
         """Инициализация undetected-chromedriver с автоматическим определением версии"""
         try:
@@ -73,6 +183,9 @@ class OptifineChecker:
             except Exception as e:
                 chrome_version = 145  # Если не удалось определить, ставим последнюю известную
                 logger.warning(f"⚠️ Не удалось определить версию Chrome, использую {chrome_version}. Ошибка: {e}")
+            
+            # Создаем временную директорию для профиля
+            user_data_dir = tempfile.mkdtemp()
             
             # Настройки для максимальной маскировки
             options = uc.ChromeOptions()
@@ -111,6 +224,10 @@ class OptifineChecker:
             # ВАЖНО: Настройка для работы в Railway
             options.add_argument('--remote-debugging-port=9222')
             
+            # Используем реальный профиль
+            options.add_argument(f'--user-data-dir={user_data_dir}')
+            options.add_argument('--profile-directory=Default')
+            
             # Устанавливаем DISPLAY для Xvfb
             os.environ['DISPLAY'] = ':99'
             
@@ -125,38 +242,12 @@ class OptifineChecker:
                 driver_executable_path=None
             )
             
+            # Применяем усиленную маскировку
+            self.apply_enhanced_stealth()
+            
             # Устанавливаем таймауты
             self.driver.set_page_load_timeout(60)
             self.driver.implicitly_wait(20)
-            
-            # Дополнительная маскировка через JavaScript
-            self.driver.execute_script("""
-                // Полная маскировка автоматизации
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                
-                // Маскировка Chrome
-                window.chrome = {runtime: {}};
-                
-                // Маскировка WebGL (важно для Cloudflare)
-                const getParameter = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                    if (parameter === 37445) return 'Intel Inc.';
-                    if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-                    return getParameter(parameter);
-                };
-                
-                // Добавляем реальные значения
-                Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-                Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                
-                // Маскировка разрешения экрана
-                Object.defineProperty(screen, 'width', {get: () => 1920});
-                Object.defineProperty(screen, 'height', {get: () => 1080});
-                Object.defineProperty(screen, 'availWidth', {get: () => 1920});
-                Object.defineProperty(screen, 'availHeight', {get: () => 1040});
-            """)
             
             logger.info("✅ Undetected driver успешно инициализирован")
             return True
@@ -178,6 +269,9 @@ class OptifineChecker:
         # Ждем начальной загрузки
         time.sleep(5)
         
+        # Счетчик для периодического обновления
+        refresh_counter = 0
+        
         while time.time() - start_time < timeout:
             try:
                 page_source = self.driver.page_source
@@ -196,8 +290,40 @@ class OptifineChecker:
                         return True
                 
                 # Специфичная обработка Turnstile
-                if 'turnstile' in page_source.lower() or 'cf-chl-widget' in page_source:
+                if 'turnstile' in page_source.lower() or 'cf-chl-widget' in page_source or 'cf-turnstile' in page_source:
                     logger.info("🔄 Обнаружена Turnstile капча, жду автоматического решения...")
+                    
+                    # Пробуем найти и кликнуть на чекбокс если он есть
+                    try:
+                        # Ищем iframe с капчей
+                        iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                        for iframe in iframes:
+                            src = iframe.get_attribute('src') or ''
+                            if 'challenges.cloudflare.com' in src or 'turnstile' in src:
+                                logger.info("🔄 Найден iframe Turnstile, пробую взаимодействовать")
+                                
+                                # Переключаемся в iframe
+                                self.driver.switch_to.frame(iframe)
+                                time.sleep(1)
+                                
+                                # Ищем чекбокс
+                                checkboxes = self.driver.find_elements(By.CSS_SELECTOR, 
+                                    "input[type='checkbox'], [role='checkbox'], .cf-turnstile-checkbox, [aria-label*='checkbox']")
+                                
+                                for cb in checkboxes:
+                                    if cb.is_displayed():
+                                        logger.info("🖱️ Нажимаю чекбокс в iframe")
+                                        try:
+                                            cb.click()
+                                        except:
+                                            self.driver.execute_script("arguments[0].click();", cb)
+                                        time.sleep(2)
+                                
+                                # Возвращаемся в основной документ
+                                self.driver.switch_to.default_content()
+                    except Exception as e:
+                        logger.debug(f"Ошибка при работе с iframe: {e}")
+                        self.driver.switch_to.default_content()
                     
                     # Ждем автоматического решения (до 45 секунд)
                     for i in range(45):
@@ -216,7 +342,7 @@ class OptifineChecker:
                                 try:
                                     # Ищем кнопку submit
                                     submit_btn = self.driver.find_elements(By.CSS_SELECTOR, 
-                                        "button[type='submit'], input[type='submit'], .ctp-button")
+                                        "button[type='submit'], input[type='submit'], .ctp-button, #challenge-form button")
                                     
                                     if submit_btn and submit_btn[0].is_displayed():
                                         logger.info("🖱️ Нажимаю кнопку submit")
@@ -243,7 +369,7 @@ class OptifineChecker:
                         if 'login' in self.driver.current_url and 'just a moment' not in self.driver.title.lower():
                             break
                 
-                # Проверка наличия iframe с капчей
+                # Проверка наличия iframe с капчей (общая)
                 iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
                 for iframe in iframes:
                     src = iframe.get_attribute('src') or ''
@@ -274,9 +400,11 @@ class OptifineChecker:
                 # Периодическое обновление если долго висит
                 elapsed = time.time() - start_time
                 if elapsed > 30 and elapsed % 30 < 2:
-                    logger.info("🔄 Пробую обновить страницу")
-                    self.driver.refresh()
-                    time.sleep(5)
+                    refresh_counter += 1
+                    if refresh_counter <= 3:  # Максимум 3 обновления
+                        logger.info(f"🔄 Пробую обновить страницу (попытка {refresh_counter}/3)")
+                        self.driver.refresh()
+                        time.sleep(5)
                 
                 # Логирование прогресса
                 elapsed_int = int(elapsed)
@@ -291,12 +419,17 @@ class OptifineChecker:
         # Финальная отладка при неудаче
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.driver.save_screenshot(f"/app/debug/cloudflare_failed_{timestamp}.png")
-            with open(f"/app/debug/cloudflare_failed_{timestamp}.html", 'w', encoding='utf-8') as f:
+            screenshot_path = f"/app/debug/cloudflare_failed_{timestamp}.png"
+            html_path = f"/app/debug/cloudflare_failed_{timestamp}.html"
+            
+            self.driver.save_screenshot(screenshot_path)
+            with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(self.driver.page_source)
+            
             logger.info(f"📸 Сохранен скриншот ошибки Cloudflare: {timestamp}")
-        except:
-            pass
+            logger.info(f"📄 Сохранен HTML страницы: {timestamp}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при сохранении отладки: {e}")
         
         logger.warning("⚠️ Cloudflare не пройден за отведенное время")
         return False
