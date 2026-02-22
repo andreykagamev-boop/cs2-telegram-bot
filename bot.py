@@ -6,11 +6,16 @@ import time
 import random
 from datetime import datetime
 from typing import Dict, List, Tuple
-import undetected_chromedriver as uc
+
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium_stealth import stealth
+from webdriver_manager.chrome import ChromeDriverManager
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -41,39 +46,46 @@ bot_stats = {
 }
 
 class OptifineChecker:
-    """Проверка аккаунтов на Optifine.net с undetected-chromedriver"""
+    """Проверка аккаунтов на Optifine.net с selenium-stealth"""
     
     def __init__(self):
         self.driver = None
         self.init_driver()
     
     def init_driver(self):
-        """Инициализация драйвера"""
+        """Инициализация драйвера с stealth режимом"""
         try:
-            options = uc.ChromeOptions()
+            chrome_options = Options()
             
             # Основные настройки для скрытности
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument('--start-maximized')
-            options.add_argument('--disable-extensions')
-            options.add_argument('--disable-plugins')
-            options.add_argument('--disable-images')
-            options.add_argument('--disable-javascript')  # Отключаем для скорости, если не нужен JS
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--start-maximized')
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-plugins')
+            chrome_options.add_argument('--headless=new')  # Headless режим для сервера
             
             # Скрываем автоматизацию
-            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # Headless режим для сервера
-            options.add_argument('--headless=new')
+            # Создаем драйвер
+            service = Service('/usr/bin/chromedriver')  # Путь к chromedriver в образе selenium/standalone-chrome
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            self.driver = uc.Chrome(options=options, version_main=114)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            # Применяем stealth
+            stealth(self.driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+            )
             
-            logger.info("✅ Драйвер инициализирован")
+            logger.info("✅ Драйвер инициализирован с selenium-stealth")
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации драйвера: {e}")
@@ -111,7 +123,7 @@ class OptifineChecker:
                     self.human_like_delay(2, 4)
                     
                     # Сохраняем скриншот для отладки
-                    self.driver.save_screenshot(f"debug_profile_{login[:10]}.png")
+                    self.driver.save_screenshot(f"/app/debug/profile_{login[:10]}.png")
                     
                     page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
                     
@@ -147,10 +159,10 @@ class OptifineChecker:
                 self.human_like_delay(2, 4)
                 
                 # Сохраняем скриншот страницы входа
-                self.driver.save_screenshot(f"debug_login_{login[:10]}.png")
+                self.driver.save_screenshot(f"/app/debug/login_{login[:10]}.png")
                 
                 # Сохраняем HTML для анализа
-                with open(f"debug_login_{login[:10]}.html", 'w', encoding='utf-8') as f:
+                with open(f"/app/debug/login_{login[:10]}.html", 'w', encoding='utf-8') as f:
                     f.write(self.driver.page_source)
                 
                 # Ищем форму входа
@@ -273,7 +285,7 @@ class OptifineChecker:
                 page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
                 
                 # Сохраняем результат
-                self.driver.save_screenshot(f"debug_result_{login[:10]}.png")
+                self.driver.save_screenshot(f"/app/debug/result_{login[:10]}.png")
                 
                 # Критерии успеха
                 success_urls = ['dashboard', 'profile', 'account', 'home']
@@ -336,4 +348,4 @@ class OptifineChecker:
 # Создаем экземпляр
 checker = OptifineChecker()
 
-# ... (остальной код остается тем же - функции process_file, start, button_callback, handle_document)
+# ... (остальной код process_file, start, button_callback, handle_document остается без изменений)
