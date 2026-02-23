@@ -7,11 +7,14 @@ RUN apt-get update && apt-get install -y \
     unzip \
     curl \
     xvfb \
-    x11vnc \
     fluxbox \
     procps \
     net-tools \
     xterm \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libdbus-glib-1-2 \
+    libxtst6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -19,6 +22,13 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка AnyDesk
+RUN wget -qO - https://keys.anydesk.com/repos/DEB-GPG-KEY | apt-key add - \
+    && echo "deb http://deb.anydesk.com/ all main" > /etc/apt/sources.list.d/anydesk-stable.list \
+    && apt-get update \
+    && apt-get install -y anydesk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -31,47 +41,44 @@ COPY . .
 # Создаем папки
 RUN mkdir -p /app/debug /app/sessions && chmod 777 /app/debug /app/sessions
 
-# Скрипт запуска (исправленный)
+# Скрипт запуска
 RUN echo '#!/bin/bash\n\
-echo "🚀 Очистка старых процессов..."\n\
+echo "=========================================="\n\
+echo "🚀 ЗАПУСК OPTIFINE CHECKER (AnyDesk)"\n\
+echo "=========================================="\n\
+\n\
+echo "📌 Шаг 1: Очистка старых процессов..."\n\
 pkill Xvfb 2>/dev/null || true\n\
 pkill fluxbox 2>/dev/null || true\n\
-pkill x11vnc 2>/dev/null || true\n\
+pkill anydesk 2>/dev/null || true\n\
 rm -f /tmp/.X99-lock\n\
 sleep 2\n\
 \n\
-echo "🚀 Запуск Xvfb с правильными параметрами..."\n\
-Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\n\
+echo "📌 Шаг 2: Запуск Xvfb..."\n\
+Xvfb :99 -screen 0 1920x1080x24 -ac &\n\
 sleep 5\n\
 \n\
-echo "🖥️ Запуск Fluxbox..."\n\
+echo "📌 Шаг 3: Запуск Fluxbox..."\n\
 fluxbox &\n\
 sleep 3\n\
 \n\
-echo "🔌 Запуск VNC сервера..."\n\
-x11vnc -display :99 -forever -shared -passwd "" -rfbport 5900 -bg -o /tmp/x11vnc.log -noxdamage\n\
-sleep 3\n\
-\n\
-echo "✅ Все сервисы запущены"\n\
+echo "📌 Шаг 4: Запуск AnyDesk..."\n\
 export DISPLAY=:99\n\
+anydesk --service &\n\
+sleep 5\n\
 \n\
-# Проверка Xvfb\n\
-xdpyinfo -display :99 > /dev/null 2>&1\n\
-if [ $? -eq 0 ]; then\n\
-    echo "✅ Xvfb работает корректно"\n\
-else\n\
-    echo "❌ Ошибка Xvfb!"\n\
-    exit 1\n\
-fi\n\
+echo "📌 Шаг 5: Получение AnyDesk ID..."\n\
+ANYDESK_ID=$(anydesk --get-id)\n\
+echo "🔑 ANYDESK ID: $ANYDESK_ID" > /app/anydesk_id.txt\n\
+echo "✅ AnyDesk ID: $ANYDESK_ID"\n\
 \n\
-# Запускаем xterm для теста (чтобы убедиться что Xvfb работает)\n\
-xterm -display :99 -geometry 80x24+0+0 &\n\
-sleep 2\n\
+echo "=========================================="\n\
+echo "✅ Все сервисы запущены!"\n\
+echo "📱 ANYDESK ID: $ANYDESK_ID"\n\
+echo "=========================================="\n\
 \n\
-echo "🚀 Запуск бота..."\n\
+echo "📌 Шаг 6: Запуск бота..."\n\
 python bot.py\n\
 ' > /app/start.sh && chmod +x /app/start.sh
-
-EXPOSE 5900
 
 CMD ["/app/start.sh"]
