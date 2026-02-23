@@ -15,12 +15,17 @@ RUN apt-get update && apt-get install -y \
     psmisc \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Chrome
+# Установка СТАРОЙ версии Chrome 120
 RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    && apt-cache policy google-chrome-stable \
+    && apt-get install -y google-chrome-stable=120.0.6099.224-1 \
+    && apt-mark hold google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
+
+# Проверка версии Chrome
+RUN google-chrome --version
 
 WORKDIR /app
 
@@ -31,10 +36,10 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска с Chrome в режиме киоска и отключенной защитой
+# Скрипт запуска
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
-echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
+echo "🚀 ЗАПУСК БРАУЗЕРА (Chrome 120)"\n\
 echo "=========================================="\n\
 \n\
 killall Xvfb 2>/dev/null\n\
@@ -59,7 +64,7 @@ sleep 3\n\
 # Создаем временную директорию для Chrome\n\
 mkdir -p /tmp/chrome-profile\n\
 \n\
-# Запуск Chrome с ПОЛНОСТЬЮ отключенной защитой\n\
+# Запуск Chrome 120 с ПОЛНОСТЬЮ отключенной защитой\n\
 DISPLAY=:99 google-chrome \\\n\
   --no-sandbox \\\n\
   --disable-web-security \\\n\
@@ -106,7 +111,7 @@ DISPLAY=:99 google-chrome \\\n\
   --user-data-dir=/tmp/chrome-profile \\\n\
   --start-maximized \\\n\
   --kiosk \\\n\
-  --app=https://optifine.net/login &\n\
+  https://optifine.net/login &\n\
 \n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
 echo "=========================================="\n\
