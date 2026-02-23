@@ -37,3 +37,22 @@ RUN mkdir -p /app/debug && chmod 777 /app/debug
 
 # Запуск с Xvfb
 CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & export DISPLAY=:99 && python bot.py"]
+# Установка noVNC и TigerVNC
+RUN apt-get update && apt-get install -y \
+    novnc \
+    tigervnc-standalone-server \
+    tigervnc-common \
+    && rm -rf /var/lib/apt/lists/*
+
+# Запуск VNC сервера и noVNC
+RUN mkdir -p /root/.vnc
+RUN echo "password" | vncpasswd -f > /root/.vnc/passwd
+RUN chmod 600 /root/.vnc/passwd
+
+EXPOSE 8080 5900
+
+# Запуск Xvfb, VNC, noVNC и бота
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & \
+                   vncserver :99 -geometry 1920x1080 -depth 24 & \
+                   websockify --web /usr/share/novnc 8080 localhost:5900 & \
+                   export DISPLAY=:99 && python bot.py"]
