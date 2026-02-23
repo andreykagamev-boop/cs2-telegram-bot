@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     psmisc \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Chrome (последняя стабильная версия, но с доп. настройками)
+# Установка Chrome
 RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -34,7 +34,7 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска с дополнительными флагами для обхода защиты
+# Скрипт запуска
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
@@ -58,58 +58,6 @@ sleep 3\n\
 \n\
 websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
 sleep 3\n\
-\n\
-# Создаем временную директорию для Chrome\n\
-mkdir -p /tmp/chrome-profile\n\
-\n\
-# Запуск Chrome с максимальной маскировкой\n\
-DISPLAY=:99 google-chrome \\\n\
-  --no-sandbox \\\n\
-  --disable-web-security \\\n\
-  --disable-features=IsolateOrigins,site-per-process \\\n\
-  --disable-blink-features=AutomationControlled \\\n\
-  --disable-gpu \\\n\
-  --disable-dev-shm-usage \\\n\
-  --disable-setuid-sandbox \\\n\
-  --disable-accelerated-2d-canvas \\\n\
-  --disable-accelerated-jpeg-decoding \\\n\
-  --disable-accelerated-mjpeg-decode \\\n\
-  --disable-accelerated-video-decode \\\n\
-  --disable-background-networking \\\n\
-  --disable-background-timer-throttling \\\n\
-  --disable-backgrounding-occluded-windows \\\n\
-  --disable-breakpad \\\n\
-  --disable-client-side-phishing-detection \\\n\
-  --disable-component-extensions-with-background-pages \\\n\
-  --disable-component-update \\\n\
-  --disable-default-apps \\\n\
-  --disable-domain-reliability \\\n\
-  --disable-extensions \\\n\
-  --disable-features=TranslateUI \\\n\
-  --disable-ipc-flooding-protection \\\n\
-  --disable-notifications \\\n\
-  --disable-popup-blocking \\\n\
-  --disable-prompt-on-repost \\\n\
-  --disable-renderer-backgrounding \\\n\
-  --disable-sync \\\n\
-  --disable-translate \\\n\
-  --disable-webgl \\\n\
-  --enable-logging \\\n\
-  --force-color-profile=srgb \\\n\
-  --hide-scrollbars \\\n\
-  --metrics-recording-only \\\n\
-  --mute-audio \\\n\
-  --no-default-browser-check \\\n\
-  --no-first-run \\\n\
-  --no-pings \\\n\
-  --no-zygote \\\n\
-  --password-store=basic \\\n\
-  --use-gl=swiftshader \\\n\
-  --use-mock-keychain \\\n\
-  --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \\\n\
-  --user-data-dir=/tmp/chrome-profile \\\n\
-  --start-maximized \\\n\
-  https://optifine.net/login &\n\
 \n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
 echo "=========================================="\n\
