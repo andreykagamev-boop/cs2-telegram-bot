@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     x11vnc \
     fluxbox \
     procps \
+    net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -18,12 +19,6 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
-
-# Установка Ngrok
-RUN wget https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
-    && tar -xzf ngrok-v3-stable-linux-amd64.tgz \
-    && mv ngrok /usr/local/bin/ \
-    && rm ngrok-v3-stable-linux-amd64.tgz
 
 WORKDIR /app
 
@@ -35,12 +30,12 @@ COPY . .
 # Создаем папки
 RUN mkdir -p /app/debug /app/sessions && chmod 777 /app/debug /app/sessions
 
-# Скрипт запуска (исправленный)
+# Скрипт запуска
 RUN echo '#!/bin/bash\n\
-echo "🚀 Убиваем старые процессы..."\n\
-pkill Xvfb || true\n\
-pkill fluxbox || true\n\
-pkill x11vnc || true\n\
+echo "🚀 Очистка старых процессов..."\n\
+pkill Xvfb 2>/dev/null || true\n\
+pkill fluxbox 2>/dev/null || true\n\
+pkill x11vnc 2>/dev/null || true\n\
 rm -f /tmp/.X99-lock\n\
 sleep 2\n\
 \n\
@@ -56,24 +51,22 @@ echo "🔌 Запуск VNC сервера..."\n\
 x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log\n\
 sleep 3\n\
 \n\
-echo "🌐 Запуск Ngrok..."\n\
-ngrok authtoken ${NGROK_TOKEN}\n\
-ngrok tcp 5900 --log=stdout > /app/ngrok.log 2>&1 &\n\
-sleep 5\n\
-\n\
 echo "✅ Все сервисы запущены"\n\
 export DISPLAY=:99\n\
 \n\
-# Проверяем что Xvfb работает\n\
+# Проверка Xvfb\n\
 xdpyinfo -display :99 > /dev/null 2>&1\n\
 if [ $? -eq 0 ]; then\n\
     echo "✅ Xvfb работает корректно"\n\
 else\n\
-    echo "❌ Xvfb не работает!"\n\
+    echo "❌ Ошибка Xvfb!"\n\
     exit 1\n\
 fi\n\
 \n\
+echo "🚀 Запуск бота..."\n\
 python bot.py\n\
 ' > /app/start.sh && chmod +x /app/start.sh
+
+EXPOSE 5900
 
 CMD ["/app/start.sh"]
