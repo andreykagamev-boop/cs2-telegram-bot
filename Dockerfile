@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Установка зависимостей
+# Установка зависимостей (включая libpolkit)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg2 \
@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     libx11-xcb1 \
     libdbus-glib-1-2 \
     libxtst6 \
+    libpolkit-gobject-1-0 \
+    policykit-1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -24,7 +26,7 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка AnyDesk (исправлено: без apt-key)
+# Установка AnyDesk
 RUN wget -qO - https://keys.anydesk.com/repos/DEB-GPG-KEY | gpg --dearmor > /etc/apt/trusted.gpg.d/anydesk.gpg \
     && echo "deb [arch=amd64] http://deb.anydesk.com/ all main" > /etc/apt/sources.list.d/anydesk-stable.list \
     && apt-get update \
@@ -64,11 +66,11 @@ sleep 3\n\
 \n\
 echo "📌 Шаг 4: Запуск AnyDesk..."\n\
 export DISPLAY=:99\n\
-anydesk --service &\n\
+anydesk --service --start-with-session &\n\
 sleep 10\n\
 \n\
 echo "📌 Шаг 5: Получение AnyDesk ID..."\n\
-ANYDESK_ID=$(anydesk --get-id | head -1)\n\
+ANYDESK_ID=$(anydesk --get-id)\n\
 if [ ! -z "$ANYDESK_ID" ]; then\n\
     echo "🔑 ANYDESK ID: $ANYDESK_ID" > /app/anydesk_id.txt\n\
     echo "✅ AnyDesk ID: $ANYDESK_ID"\n\
