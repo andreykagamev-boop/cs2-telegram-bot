@@ -15,13 +15,11 @@ RUN apt-get update && apt-get install -y \
     psmisc \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка СТАРОЙ версии Chrome 120
+# Установка Chrome (последняя стабильная версия, но с доп. настройками)
 RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
-    && apt-cache policy google-chrome-stable \
-    && apt-get install -y google-chrome-stable=120.0.6099.224-1 \
-    && apt-mark hold google-chrome-stable \
+    && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
 # Проверка версии Chrome
@@ -36,10 +34,10 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска
+# Скрипт запуска с дополнительными флагами для обхода защиты
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
-echo "🚀 ЗАПУСК БРАУЗЕРА (Chrome 120)"\n\
+echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
 echo "=========================================="\n\
 \n\
 killall Xvfb 2>/dev/null\n\
@@ -64,7 +62,7 @@ sleep 3\n\
 # Создаем временную директорию для Chrome\n\
 mkdir -p /tmp/chrome-profile\n\
 \n\
-# Запуск Chrome 120 с ПОЛНОСТЬЮ отключенной защитой\n\
+# Запуск Chrome с максимальной маскировкой\n\
 DISPLAY=:99 google-chrome \\\n\
   --no-sandbox \\\n\
   --disable-web-security \\\n\
@@ -108,9 +106,9 @@ DISPLAY=:99 google-chrome \\\n\
   --password-store=basic \\\n\
   --use-gl=swiftshader \\\n\
   --use-mock-keychain \\\n\
+  --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \\\n\
   --user-data-dir=/tmp/chrome-profile \\\n\
   --start-maximized \\\n\
-  --kiosk \\\n\
   https://optifine.net/login &\n\
 \n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
