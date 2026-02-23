@@ -7,6 +7,7 @@ import time
 import subprocess
 import json
 from datetime import datetime
+from typing import Dict, List, Tuple, Optional
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -73,9 +74,9 @@ class OptifineChecker:
         logger.info("🚀 Инициализация OptifineChecker...")
     
     def init_driver(self):
-        """Инициализация драйвера с Chrome 120"""
+        """Инициализация драйвера с маскировкой"""
         try:
-            logger.info("🔍 Запуск Chrome 120 с отключенной защитой...")
+            logger.info("🔍 Запуск Chrome с маскировкой...")
             
             options = uc.ChromeOptions()
             
@@ -117,18 +118,23 @@ class OptifineChecker:
             options.add_argument('--password-store=basic')
             options.add_argument('--use-gl=swiftshader')
             options.add_argument('--use-mock-keychain')
+            
+            # Подмена User-Agent
+            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            
+            # Уникальная директория для профиля
             options.add_argument('--user-data-dir=/tmp/chrome-profile-selenium')
             
-            logger.info("🚀 Запуск undetected_chromedriver с Chrome 120...")
+            logger.info("🚀 Запуск undetected_chromedriver...")
             
             self.driver = uc.Chrome(
                 options=options,
-                version_main=120,  # Явно указываем версию 120
+                version_main=120,
                 headless=True
             )
             
             self.driver.set_page_load_timeout(30)
-            logger.info("✅ Драйвер Chrome 120 готов")
+            logger.info("✅ Драйвер готов")
             return True
             
         except Exception as e:
@@ -148,7 +154,7 @@ class OptifineChecker:
             logger.error(f"❌ Ошибка проверки страницы: {e}")
             return False
     
-    async def check_account(self, login: str, password: str) -> Dict:
+    async def check_account(self, login: str, password: str) -> dict:
         """Проверка аккаунта"""
         logger.info(f"🔍 Проверяю: {login[:20]}...")
         
@@ -239,7 +245,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     railway_url = get_railway_url()
     
     await update.message.reply_text(
-        f"👋 **Optifine Checker (Chrome 120)**\n\n"
+        f"👋 **Optifine Checker**\n\n"
         f"📱 **Доступ к браузеру:**\n"
         f"{railway_url}/vnc.html\n\n"
         f"📥 **Отправь .txt файл** с аккаунтами\n"
@@ -291,7 +297,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🖥️ **Подключись к браузеру:**\n"
         f"{railway_url}/vnc.html\n\n"
         f"1️⃣ Нажми **Connect**\n"
-        f"2️⃣ Найди галочку в Chrome 120\n"
+        f"2️⃣ Найди галочку\n"
         f"3️⃣ **Нажми на галочку**\n"
         f"4️⃣ Вернись и нажми кнопку",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -406,7 +412,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Запуск"""
     print("=" * 50)
-    print("🚀 ЗАПУСК OPTIFINE CHECKER (Chrome 120)")
+    print("🚀 ЗАПУСК OPTIFINE CHECKER")
     print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
