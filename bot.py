@@ -7,6 +7,7 @@ import time
 import random
 import subprocess
 import json
+import re
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -107,7 +108,6 @@ class OptifineChecker:
             options.add_argument('--ignore-ssl-errors')
             options.add_argument('--disable-gpu-sandbox')
             options.add_argument('--disable-software-rasterizer')
-            options.add_argument('--disable-features=VizDisplayCompositor')
             
             logger.info(f"🚀 Запускаю undetected_chromedriver...")
             
@@ -161,91 +161,63 @@ class OptifineChecker:
             logger.error(f"❌ Ошибка проверки: {e}")
             return False
 
-    async def setup_vnc_access(self, update, context):
-        """Настраивает VNC доступ"""
+    async def setup_anydesk_access(self, update, context):
+        """Настраивает AnyDesk доступ"""
         try:
             session_id = f"{update.effective_user.id}_{int(time.time())}"
             
-            # Получаем Railway URL
-            railway_url = None
-            vnc_address = None
+            # Получаем AnyDesk ID
+            anydesk_id = None
             
-            # Способ 1: Через переменные окружения
-            railway_host = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
-            if railway_host:
-                vnc_address = f"{railway_host}:5900"
-                logger.info(f"✅ Railway URL из переменных: {vnc_address}")
+            # Способ 1: Из файла
+            if os.path.exists('/app/anydesk_id.txt'):
+                with open('/app/anydesk_id.txt', 'r') as f:
+                    content = f.read().strip()
+                    # Извлекаем ID (9-10 цифр)
+                    match = re.search(r'(\d{9,10})', content)
+                    if match:
+                        anydesk_id = match.group(1)
+                        logger.info(f"✅ AnyDesk ID из файла: {anydesk_id}")
             
-            # Способ 2: Через метаданные Railway
-            if not vnc_address:
+            # Способ 2: Через команду
+            if not anydesk_id:
                 try:
-                    result = subprocess.run(['curl', '-s', 'http://metadata.railway.internal/'], 
+                    result = subprocess.run(['anydesk', '--get-id'], 
                                           capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
-                        data = json.loads(result.stdout)
-                        hostname = data.get('hostname')
-                        if hostname:
-                            vnc_address = f"{hostname}.railway.app:5900"
-                            logger.info(f"✅ Railway URL из метаданных: {vnc_address}")
+                        anydesk_id = result.stdout.strip()
+                        logger.info(f"✅ AnyDesk ID из команды: {anydesk_id}")
                 except Exception as e:
-                    logger.error(f"❌ Ошибка получения метаданных: {e}")
-            
-            # Способ 3: Через файл с IP
-            if not vnc_address and os.path.exists('/app/vnc_address.txt'):
-                with open('/app/vnc_address.txt', 'r') as f:
-                    vnc_address = f.read().strip()
-                logger.info(f"✅ VNC адрес из файла: {vnc_address}")
-            
-            # Способ 4: Просто IP
-            if not vnc_address:
-                try:
-                    result = subprocess.run(['curl', '-s', 'ifconfig.me'], 
-                                          capture_output=True, text=True, timeout=5)
-                    public_ip = result.stdout.strip()
-                    if public_ip:
-                        vnc_address = f"{public_ip}:5900"
-                        logger.info(f"✅ Публичный IP: {vnc_address}")
-                except:
-                    pass
+                    logger.error(f"❌ Ошибка получения AnyDesk ID: {e}")
             
             keyboard = [
-                [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"vnc_done_{session_id}")],
-                [InlineKeyboardButton("🔄 Проверить статус", callback_data=f"vnc_status_{session_id}")],
-                [InlineKeyboardButton("❌ Отмена", callback_data=f"vnc_cancel_{session_id}")]
+                [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"any_done_{session_id}")],
+                [InlineKeyboardButton("🔄 Проверить статус", callback_data=f"any_status_{session_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"any_cancel_{session_id}")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            if vnc_address:
+            if anydesk_id:
                 instruction = (
-                    f"🖥️ **VNC ДОСТУП К БРАУЗЕРУ**\n\n"
-                    f"🔗 **АДРЕС ДЛЯ ПОДКЛЮЧЕНИЯ:**\n"
-                    f"`{vnc_address}`\n\n"
-                    f"📱 **НА ТЕЛЕФОНЕ (VNC Viewer):**\n"
-                    f"1. Скачай **VNC Viewer** из магазина приложений\n"
-                    f"2. Нажми **+** → Введи адрес выше\n"
-                    f"3. Нажми **Connect**\n\n"
-                    f"💻 **НА КОМПЬЮТЕРЕ:**\n"
-                    f"1. Скачай **RealVNC Viewer**\n"
-                    f"2. Введи адрес: `{vnc_address}`\n"
-                    f"3. Нажми Connect\n\n"
-                    f"✅ **ЧТО ДЕЛАТЬ:**\n"
+                    f"🖥️ **ПОДКЛЮЧЕНИЕ ЧЕРЕЗ AnyDesk**\n\n"
+                    f"🔑 **ANYDESK ID:**\n"
+                    f"`{anydesk_id}`\n\n"
+                    f"📱 **ИНСТРУКЦИЯ ДЛЯ АЙФОНА:**\n"
+                    f"1️⃣ Скачай **AnyDesk** из App Store (бесплатно)\n"
+                    f"2️⃣ Открой приложение\n"
+                    f"3️⃣ Введи этот ID в поле «Удаленный адрес»\n"
+                    f"4️⃣ Нажми **Подключиться**\n"
+                    f"5️⃣ Пароль **НЕ НУЖЕН**\n\n"
+                    f"✅ **ЧТО ДЕЛАТЬ ДАЛЬШЕ:**\n"
                     f"• Ты увидишь рабочий стол с браузером\n"
                     f"• На странице **optifine.net/login** нажми галочку\n"
-                    f"• После этого вернись и нажми кнопку ниже\n\n"
+                    f"• После этого вернись в Telegram и нажми кнопку ниже\n\n"
                     f"⏳ **Время ожидания: 5 минут**"
                 )
             else:
                 instruction = (
-                    f"🖥️ **НАСТРОЙКА VNC ДОСТУПА**\n\n"
-                    f"1️⃣ **Зайди в Railway Dashboard**\n"
-                    f"2️⃣ **Открой Settings → Networking**\n"
-                    f"3️⃣ **Добавь порт 5900 (TCP)**\n"
-                    f"4️⃣ **Скопируй публичный адрес**\n\n"
-                    f"5️⃣ **Скачай VNC Viewer** на телефон\n"
-                    f"6️⃣ **Введи скопированный адрес**\n"
-                    f"7️⃣ **Нажми Connect**\n\n"
-                    f"8️⃣ **Нажми галочку** в браузере\n"
-                    f"9️⃣ **Вернись и нажми кнопку**"
+                    f"❌ **Не удалось получить AnyDesk ID**\n\n"
+                    f"Проверь логи через команду /debug"
                 )
             
             await update.message.reply_text(instruction, reply_markup=reply_markup)
@@ -269,7 +241,7 @@ class OptifineChecker:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка VNC: {e}")
+            logger.error(f"❌ Ошибка AnyDesk: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
             return False
 
@@ -279,7 +251,7 @@ class OptifineChecker:
         await query.answer()
         
         data = query.data
-        if not data.startswith('vnc_'):
+        if not data.startswith('any_'):
             return
         
         parts = data.split('_')
@@ -305,7 +277,7 @@ class OptifineChecker:
                 session['checker'].driver.save_screenshot('/app/debug/cloudflare_still_active.png')
                 await query.edit_message_text(
                     "❌ **Cloudflare все еще активен**\n\n"
-                    "Посмотри в VNC:\n"
+                    "Посмотри в AnyDesk:\n"
                     "• Видишь ли страницу с галочкой?\n"
                     "• Нажми на галочку\n"
                     "• Попробуй еще раз"
@@ -438,7 +410,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     await update.message.reply_text(
-        f"👋 **Optifine Checker с VNC доступом**\n\n"
+        f"👋 **Optifine Checker с AnyDesk**\n\n"
         f"📥 **Отправь .txt файл** с аккаунтами\n"
         f"Формат: логин:пароль (каждый с новой строки)\n\n"
         f"📌 **Пример:**\n"
@@ -516,14 +488,14 @@ async def process_file(file_path, update, context):
             await msg.edit_text("❌ **Ошибка инициализации**\n\nПроверь логи через /debug")
             return
         
-        # Настройка VNC
-        success = await checker.setup_vnc_access(update, context)
+        # Настройка AnyDesk
+        success = await checker.setup_anydesk_access(update, context)
         if not success:
             checker.close()
             return
         
         # Ожидание Cloudflare
-        await msg.edit_text(f"⏳ **Ожидаю прохождения Cloudflare...**\n\nПодключись к VNC и нажми галочку")
+        await msg.edit_text(f"⏳ **Ожидаю прохождения Cloudflare...**\n\nПодключись к AnyDesk и нажми галочку")
         
         # Проверка аккаунтов
         valid_count = 0
@@ -620,12 +592,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка кнопок"""
     query = update.callback_query
     
-    if query.data and query.data.startswith('vnc_'):
+    if query.data and query.data.startswith('any_'):
         checker = OptifineChecker()
         await checker.handle_callback(update, context)
         return
     
     await query.answer()
+    
+    if query.data == 'stats':
+        uptime =()
     
     if query.data == 'stats':
         uptime = datetime.now() - bot_stats['start_time']
@@ -646,7 +621,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1. Создай .txt файл\n"
             "2. В каждой строке: логин:пароль\n"
             "3. Отправь файл боту\n"
-            "4. Подключись к VNC по полученному адресу\n"
+            "4. Подключись к AnyDesk по полученному ID\n"
             "5. Нажми галочку в браузере\n"
             "6. Нажми кнопку подтверждения"
         )
@@ -654,7 +629,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Запуск"""
     print("=" * 50)
-    print("🚀 ЗАПУСК OPTIFINE CHECKER (VNC РЕЖИМ)")
+    print("🚀 ЗАПУСК OPTIFINE CHECKER (AnyDesk РЕЖИМ)")
     print("=" * 50)
     print(f"📁 Директория отладки: /app/debug")
     print(f"👑 Admin IDs: {ADMIN_IDS}")
