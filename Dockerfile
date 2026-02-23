@@ -31,7 +31,7 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска
+# Скрипт запуска с принудительным запуском Chrome
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
@@ -55,6 +55,19 @@ sleep 3\n\
 \n\
 websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
 sleep 3\n\
+\n\
+# Принудительный запуск Chrome с отключенной безопасностью\n\
+DISPLAY=:99 google-chrome \\\n\
+  --no-sandbox \\\n\
+  --disable-web-security \\\n\
+  --disable-features=IsolateOrigins,site-per-process \\\n\
+  --disable-blink-features=AutomationControlled \\\n\
+  --disable-gpu \\\n\
+  --disable-dev-shm-usage \\\n\
+  --disable-setuid-sandbox \\\n\
+  --start-maximized \\\n\
+  --new-window \\\n\
+  https://optifine.net/login &\n\
 \n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
 echo "=========================================="\n\
