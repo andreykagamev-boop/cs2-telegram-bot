@@ -1,21 +1,13 @@
 FROM python:3.11-slim
 
-# Установка зависимостей
+# Установка Chrome
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg2 \
     unzip \
     curl \
-    xvfb \
-    x11vnc \
-    fluxbox \
-    novnc \
-    websockify \
-    procps \
-    psmisc \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Chrome
 RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -23,104 +15,9 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
+RUN mkdir -p /app/debug
 
-RUN mkdir -p /app/debug && chmod 777 /app/debug
-
-# Скрипт запуска с принудительным запуском Chrome
-RUN echo '#!/bin/bash\n\
-echo "=========================================="\n\
-echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
-echo "=========================================="\n\
-\n\
-# Убиваем старые процессы\n\
-killall Xvfb 2>/dev/null\n\
-killall fluxbox 2>/dev/null\n\
-killall x11vnc 2>/dev/null\n\
-killall websockify 2>/dev/null\n\
-rm -f /tmp/.X99-lock\n\
-sleep 3\n\
-\n\
-# Запуск Xvfb\n\
-Xvfb :99 -screen 0 1920x1080x24 &\n\
-sleep 5\n\
-\n\
-# Запуск Fluxbox\n\
-DISPLAY=:99 fluxbox &\n\
-sleep 3\n\
-\n\
-# Запуск VNC\n\
-x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &\n\
-sleep 3\n\
-\n\
-# Запуск noVNC\n\
-websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
-sleep 3\n\
-\n\
-# СОЗДАЕМ ПРОФИЛЬ CHROME\n\
-mkdir -p /tmp/chrome-profile\n\
-\n\
-# ЗАПУСК CHROME (принудительно)\n\
-echo "🚀 Запускаю Chrome..."\n\
-DISPLAY=:99 google-chrome \\\n\
-  --no-sandbox \\\n\
-  --disable-web-security \\\n\
-  --disable-features=IsolateOrigins,site-per-process \\\n\
-  --disable-blink-features=AutomationControlled \\\n\
-  --disable-gpu \\\n\
-  --disable-dev-shm-usage \\\n\
-  --disable-setuid-sandbox \\\n\
-  --disable-accelerated-2d-canvas \\\n\
-  --disable-background-networking \\\n\
-  --disable-background-timer-throttling \\\n\
-  --disable-backgrounding-occluded-windows \\\n\
-  --disable-breakpad \\\n\
-  --disable-client-side-phishing-detection \\\n\
-  --disable-component-update \\\n\
-  --disable-default-apps \\\n\
-  --disable-domain-reliability \\\n\
-  --disable-extensions \\\n\
-  --disable-ipc-flooding-protection \\\n\
-  --disable-notifications \\\n\
-  --disable-popup-blocking \\\n\
-  --disable-renderer-backgrounding \\\n\
-  --disable-sync \\\n\
-  --disable-translate \\\n\
-  --ignore-certificate-errors \\\n\
-  --no-default-browser-check \\\n\
-  --no-first-run \\\n\
-  --no-zygote \\\n\
-  --password-store=basic \\\n\
-  --use-gl=swiftshader \\\n\
-  --user-data-dir=/tmp/chrome-profile \\\n\
-  --start-maximized \\\n\
-  --new-window \\\n\
-  https://optifine.net/login &\n\
-\n\
-# Проверяем что Chrome запустился\n\
-sleep 5\n\
-if pgrep -f "chrome" > /dev/null; then\n\
-    echo "✅ Chrome успешно запущен"\n\
-else\n\
-    echo "❌ Chrome не запустился, пробую еще раз..."\n\
-    DISPLAY=:99 google-chrome --no-sandbox https://optifine.net/login &\n\
-fi\n\
-\n\
-PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
-echo "=========================================="\n\
-echo "✅ ВСЕ СЕРВИСЫ ЗАПУЩЕНЫ!"\n\
-echo "📱 Открой в браузере на телефоне:"\n\
-echo "http://$PUBLIC_IP:8080/vnc.html"\n\
-echo "=========================================="\n\
-\n\
-export DISPLAY=:99\n\
-python bot.py\n\
-' > /app/start.sh && chmod +x /app/start.sh
-
-EXPOSE 8080 5900
-
-CMD ["/app/start.sh"]
+CMD ["python", "bot.py"]
