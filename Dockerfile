@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     websockify \
     procps \
     psmisc \
+    nano \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -31,7 +32,7 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска с автоматическим открытием Chrome
+# Скрипт запуска
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
@@ -49,13 +50,9 @@ sleep 3\n\
 Xvfb :99 -screen 0 1920x1080x24 &\n\
 sleep 5\n\
 \n\
-# Запуск Fluxbox (оконный менеджер)\n\
+# Запуск Fluxbox\n\
 DISPLAY=:99 fluxbox &\n\
 sleep 3\n\
-\n\
-# Запуск Chrome сразу после Fluxbox\n\
-DISPLAY=:99 google-chrome --no-sandbox --start-maximized https://optifine.net/login &\n\
-sleep 5\n\
 \n\
 # Запуск VNC\n\
 x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &\n\
@@ -64,6 +61,9 @@ sleep 3\n\
 # Запуск noVNC\n\
 websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
 sleep 3\n\
+\n\
+# Запуск Chrome с таймером (ждем 10 секунд перед открытием)\n\
+(sleep 10 && DISPLAY=:99 google-chrome --no-sandbox --start-maximized https://optifine.net/login) &\n\
 \n\
 # Получаем внешний IP\n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
