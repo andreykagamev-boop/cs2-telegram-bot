@@ -31,13 +31,13 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска
+# Скрипт запуска с автоматическим открытием Chrome
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
 echo "=========================================="\n\
 \n\
-# Убиваем все старые процессы\n\
+# Убиваем старые процессы\n\
 killall Xvfb 2>/dev/null\n\
 killall fluxbox 2>/dev/null\n\
 killall x11vnc 2>/dev/null\n\
@@ -49,9 +49,13 @@ sleep 3\n\
 Xvfb :99 -screen 0 1920x1080x24 &\n\
 sleep 5\n\
 \n\
-# Запуск Fluxbox\n\
+# Запуск Fluxbox (оконный менеджер)\n\
 DISPLAY=:99 fluxbox &\n\
 sleep 3\n\
+\n\
+# Запуск Chrome сразу после Fluxbox\n\
+DISPLAY=:99 google-chrome --no-sandbox --start-maximized https://optifine.net/login &\n\
+sleep 5\n\
 \n\
 # Запуск VNC\n\
 x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &\n\
