@@ -205,8 +205,7 @@ class OptifineChecker:
                     f"2. Нажми Connect\n\n"
                     f"✅ **ДЕЙСТВИЯ:**\n"
                     f"• Нажми галочку в браузере\n"
-                    f"• Вернись и нажми кнопку",
-                    reply_markup=reply_markup
+                    f"• Вернись и нажми кнопку"
                 )
             else:
                 instruction = (
@@ -219,8 +218,7 @@ class OptifineChecker:
                     f"6️⃣ **Введи скопированный адрес**\n"
                     f"7️⃣ **Нажми Connect**\n\n"
                     f"8️⃣ **Нажми галочку** в браузере\n"
-                    f"9️⃣ **Вернись и нажми кнопку**",
-                    reply_markup=reply_markup
+                    f"9️⃣ **Вернись и нажми кнопку**"
                 )
             
             await update.message.reply_text(instruction, reply_markup=reply_markup)
