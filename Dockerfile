@@ -22,9 +22,6 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Проверка версии Chrome
-RUN google-chrome --version
-
 WORKDIR /app
 
 COPY requirements.txt .
@@ -34,12 +31,13 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска
+# Скрипт запуска с принудительным запуском Chrome
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
 echo "=========================================="\n\
 \n\
+# Убиваем старые процессы\n\
 killall Xvfb 2>/dev/null\n\
 killall fluxbox 2>/dev/null\n\
 killall x11vnc 2>/dev/null\n\
@@ -47,17 +45,70 @@ killall websockify 2>/dev/null\n\
 rm -f /tmp/.X99-lock\n\
 sleep 3\n\
 \n\
+# Запуск Xvfb\n\
 Xvfb :99 -screen 0 1920x1080x24 &\n\
 sleep 5\n\
 \n\
+# Запуск Fluxbox\n\
 DISPLAY=:99 fluxbox &\n\
 sleep 3\n\
 \n\
+# Запуск VNC\n\
 x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &\n\
 sleep 3\n\
 \n\
+# Запуск noVNC\n\
 websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
 sleep 3\n\
+\n\
+# СОЗДАЕМ ПРОФИЛЬ CHROME\n\
+mkdir -p /tmp/chrome-profile\n\
+\n\
+# ЗАПУСК CHROME (принудительно)\n\
+echo "🚀 Запускаю Chrome..."\n\
+DISPLAY=:99 google-chrome \\\n\
+  --no-sandbox \\\n\
+  --disable-web-security \\\n\
+  --disable-features=IsolateOrigins,site-per-process \\\n\
+  --disable-blink-features=AutomationControlled \\\n\
+  --disable-gpu \\\n\
+  --disable-dev-shm-usage \\\n\
+  --disable-setuid-sandbox \\\n\
+  --disable-accelerated-2d-canvas \\\n\
+  --disable-background-networking \\\n\
+  --disable-background-timer-throttling \\\n\
+  --disable-backgrounding-occluded-windows \\\n\
+  --disable-breakpad \\\n\
+  --disable-client-side-phishing-detection \\\n\
+  --disable-component-update \\\n\
+  --disable-default-apps \\\n\
+  --disable-domain-reliability \\\n\
+  --disable-extensions \\\n\
+  --disable-ipc-flooding-protection \\\n\
+  --disable-notifications \\\n\
+  --disable-popup-blocking \\\n\
+  --disable-renderer-backgrounding \\\n\
+  --disable-sync \\\n\
+  --disable-translate \\\n\
+  --ignore-certificate-errors \\\n\
+  --no-default-browser-check \\\n\
+  --no-first-run \\\n\
+  --no-zygote \\\n\
+  --password-store=basic \\\n\
+  --use-gl=swiftshader \\\n\
+  --user-data-dir=/tmp/chrome-profile \\\n\
+  --start-maximized \\\n\
+  --new-window \\\n\
+  https://optifine.net/login &\n\
+\n\
+# Проверяем что Chrome запустился\n\
+sleep 5\n\
+if pgrep -f "chrome" > /dev/null; then\n\
+    echo "✅ Chrome успешно запущен"\n\
+else\n\
+    echo "❌ Chrome не запустился, пробую еще раз..."\n\
+    DISPLAY=:99 google-chrome --no-sandbox https://optifine.net/login &\n\
+fi\n\
 \n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
 echo "=========================================="\n\
