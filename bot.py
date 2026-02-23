@@ -7,7 +7,7 @@ import time
 import subprocess
 import json
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -74,9 +74,9 @@ class OptifineChecker:
         logger.info("🚀 Инициализация OptifineChecker...")
     
     def init_driver(self):
-        """Инициализация драйвера с маскировкой"""
+        """Инициализация драйвера"""
         try:
-            logger.info("🔍 Запуск Chrome с маскировкой...")
+            logger.info("🔍 Запуск Chrome...")
             
             options = uc.ChromeOptions()
             
@@ -119,10 +119,10 @@ class OptifineChecker:
             options.add_argument('--use-gl=swiftshader')
             options.add_argument('--use-mock-keychain')
             
-            # Подмена User-Agent
+            # Важно: подмена User-Agent на старый
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # Уникальная директория для профиля
+            # Директория для профиля
             options.add_argument('--user-data-dir=/tmp/chrome-profile-selenium')
             
             logger.info("🚀 Запуск undetected_chromedriver...")
@@ -299,7 +299,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"1️⃣ Нажми **Connect**\n"
         f"2️⃣ Найди галочку\n"
         f"3️⃣ **Нажми на галочку**\n"
-        f"4️⃣ Вернись и нажми кнопку",
+        f"4️⃣ Если опять просит - нажми еще раз\n"
+        f"5️⃣ После успеха нажми кнопку",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
