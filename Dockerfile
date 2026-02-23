@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Установка зависимостей (включая libpolkit)
+# Установка зависимостей (исправлено: policykit-1 -> polkitd)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg2 \
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     libdbus-glib-1-2 \
     libxtst6 \
     libpolkit-gobject-1-0 \
-    policykit-1 \
+    polkitd \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -66,7 +66,7 @@ sleep 3\n\
 \n\
 echo "📌 Шаг 4: Запуск AnyDesk..."\n\
 export DISPLAY=:99\n\
-anydesk --service --start-with-session &\n\
+anydesk --service &\n\
 sleep 10\n\
 \n\
 echo "📌 Шаг 5: Получение AnyDesk ID..."\n\
