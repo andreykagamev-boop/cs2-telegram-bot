@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     fluxbox \
     procps \
     net-tools \
+    xterm \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -30,7 +31,7 @@ COPY . .
 # Создаем папки
 RUN mkdir -p /app/debug /app/sessions && chmod 777 /app/debug /app/sessions
 
-# Скрипт запуска
+# Скрипт запуска (исправленный)
 RUN echo '#!/bin/bash\n\
 echo "🚀 Очистка старых процессов..."\n\
 pkill Xvfb 2>/dev/null || true\n\
@@ -39,8 +40,8 @@ pkill x11vnc 2>/dev/null || true\n\
 rm -f /tmp/.X99-lock\n\
 sleep 2\n\
 \n\
-echo "🚀 Запуск Xvfb..."\n\
-Xvfb :99 -screen 0 1920x1080x24 &\n\
+echo "🚀 Запуск Xvfb с правильными параметрами..."\n\
+Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\n\
 sleep 5\n\
 \n\
 echo "🖥️ Запуск Fluxbox..."\n\
@@ -48,7 +49,7 @@ fluxbox &\n\
 sleep 3\n\
 \n\
 echo "🔌 Запуск VNC сервера..."\n\
-x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log\n\
+x11vnc -display :99 -forever -shared -passwd "" -rfbport 5900 -bg -o /tmp/x11vnc.log -noxdamage\n\
 sleep 3\n\
 \n\
 echo "✅ Все сервисы запущены"\n\
@@ -62,6 +63,10 @@ else\n\
     echo "❌ Ошибка Xvfb!"\n\
     exit 1\n\
 fi\n\
+\n\
+# Запускаем xterm для теста (чтобы убедиться что Xvfb работает)\n\
+xterm -display :99 -geometry 80x24+0+0 &\n\
+sleep 2\n\
 \n\
 echo "🚀 Запуск бота..."\n\
 python bot.py\n\
