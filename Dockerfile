@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y \
     websockify \
     procps \
     psmisc \
-    nano \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -32,13 +31,12 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска
+# Скрипт запуска с Chrome в режиме без безопасности
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
 echo "=========================================="\n\
 \n\
-# Убиваем старые процессы\n\
 killall Xvfb 2>/dev/null\n\
 killall fluxbox 2>/dev/null\n\
 killall x11vnc 2>/dev/null\n\
@@ -46,26 +44,30 @@ killall websockify 2>/dev/null\n\
 rm -f /tmp/.X99-lock\n\
 sleep 3\n\
 \n\
-# Запуск Xvfb\n\
 Xvfb :99 -screen 0 1920x1080x24 &\n\
 sleep 5\n\
 \n\
-# Запуск Fluxbox\n\
 DISPLAY=:99 fluxbox &\n\
 sleep 3\n\
 \n\
-# Запуск VNC\n\
 x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &\n\
 sleep 3\n\
 \n\
-# Запуск noVNC\n\
 websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
 sleep 3\n\
 \n\
-# Запуск Chrome с таймером (ждем 10 секунд перед открытием)\n\
-(sleep 10 && DISPLAY=:99 google-chrome --no-sandbox --start-maximized https://optifine.net/login) &\n\
+# Запуск Chrome с отключенной безопасностью\n\
+(sleep 10 && DISPLAY=:99 google-chrome \\\n\
+  --no-sandbox \\\n\
+  --disable-web-security \\\n\
+  --disable-features=IsolateOrigins,site-per-process \\\n\
+  --disable-blink-features=AutomationControlled \\\n\
+  --disable-gpu \\\n\
+  --disable-dev-shm-usage \\\n\
+  --disable-setuid-sandbox \\\n\
+  --start-maximized \\\n\
+  https://optifine.net/login) &\n\
 \n\
-# Получаем внешний IP\n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
 echo "=========================================="\n\
 echo "✅ ВСЕ СЕРВИСЫ ЗАПУЩЕНЫ!"\n\
@@ -73,7 +75,6 @@ echo "📱 Открой в браузере на телефоне:"\n\
 echo "http://$PUBLIC_IP:8080/vnc.html"\n\
 echo "=========================================="\n\
 \n\
-# Запуск бота\n\
 export DISPLAY=:99\n\
 python bot.py\n\
 ' > /app/start.sh && chmod +x /app/start.sh
