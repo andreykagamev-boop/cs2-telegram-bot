@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Установка зависимостей (исправлено: policykit-1 -> polkitd)
+# Установка зависимостей
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg2 \
@@ -15,8 +15,6 @@ RUN apt-get update && apt-get install -y \
     libx11-xcb1 \
     libdbus-glib-1-2 \
     libxtst6 \
-    libpolkit-gobject-1-0 \
-    polkitd \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Chrome
@@ -26,7 +24,7 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка AnyDesk
+# Установка AnyDesk (без polkit)
 RUN wget -qO - https://keys.anydesk.com/repos/DEB-GPG-KEY | gpg --dearmor > /etc/apt/trusted.gpg.d/anydesk.gpg \
     && echo "deb [arch=amd64] http://deb.anydesk.com/ all main" > /etc/apt/sources.list.d/anydesk-stable.list \
     && apt-get update \
@@ -43,7 +41,7 @@ COPY . .
 # Создаем папки
 RUN mkdir -p /app/debug /app/sessions && chmod 777 /app/debug /app/sessions
 
-# Скрипт запуска
+# Скрипт запуска (упрощенный)
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК OPTIFINE CHECKER (AnyDesk)"\n\
@@ -52,7 +50,6 @@ echo "=========================================="\n\
 echo "📌 Шаг 1: Очистка старых процессов..."\n\
 pkill Xvfb 2>/dev/null || true\n\
 pkill fluxbox 2>/dev/null || true\n\
-pkill anydesk 2>/dev/null || true\n\
 rm -f /tmp/.X99-lock\n\
 sleep 2\n\
 \n\
@@ -64,28 +61,8 @@ echo "📌 Шаг 3: Запуск Fluxbox..."\n\
 fluxbox &\n\
 sleep 3\n\
 \n\
-echo "📌 Шаг 4: Запуск AnyDesk..."\n\
+echo "📌 Шаг 4: Запуск бота..."\n\
 export DISPLAY=:99\n\
-anydesk --service &\n\
-sleep 10\n\
-\n\
-echo "📌 Шаг 5: Получение AnyDesk ID..."\n\
-ANYDESK_ID=$(anydesk --get-id)\n\
-if [ ! -z "$ANYDESK_ID" ]; then\n\
-    echo "🔑 ANYDESK ID: $ANYDESK_ID" > /app/anydesk_id.txt\n\
-    echo "✅ AnyDesk ID: $ANYDESK_ID"\n\
-else\n\
-    echo "❌ Не удалось получить AnyDesk ID"\n\
-fi\n\
-\n\
-echo "=========================================="\n\
-echo "✅ Все сервисы запущены!"\n\
-if [ ! -z "$ANYDESK_ID" ]; then\n\
-    echo "📱 ANYDESK ID: $ANYDESK_ID"\n\
-fi\n\
-echo "=========================================="\n\
-\n\
-echo "📌 Шаг 6: Запуск бота..."\n\
 python bot.py\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
