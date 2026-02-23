@@ -110,21 +110,55 @@ class OptifineChecker:
             return False
     
     def get_ngrok_url(self):
-        """Получает URL Ngrok из лога"""
+    """Получает URL Ngrok из лога"""
+    try:
+        if not os.path.exists('/app/ngrok.log'):
+            logger.error("❌ Файл ngrok.log не найден")
+            return None
+        
+        # Читаем лог
+        with open('/app/ngrok.log', 'r') as f:
+            content = f.read()
+            logger.info(f"📄 Ngrok лог: {content[:200]}...")  # Логируем начало лога
+        
+        # Ищем URL в разных форматах
+        patterns = [
+            r'url=tcp://(.*?)(?:\s|$)',  # формат url=tcp://0.tcp.ngrok.io:12345
+            r'started tunnel.*?(0\.tcp\..*?:\d+)',  # альтернативный формат
+            r'(0\.tcp\..*?ngrok\.io:\d+)'  # просто адрес
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match:
+                url = match.group(1)
+                logger.info(f"✅ Найден Ngrok URL: {url}")
+                return url
+        
+        # Если не нашли, пробуем выполнить команду напрямую
         try:
-            if not os.path.exists('/app/ngrok.log'):
-                return None
-            
-            with open('/app/ngrok.log', 'r') as f:
-                content = f.read()
-                # Ищем URL в логе Ngrok
-                match = re.search(r'url=tcp://(.*?)(?:\s|$)', content)
-                if match:
-                    return match.group(1)
-            return None
+            result = subprocess.run(['ngrok', 'api', 'tunnels'], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                # Парсим JSON ответ
+                import json
+                data = json.loads(result.stdout)
+                if data.get('tunnels') and len(data['tunnels']) > 0:
+                    public_url = data['tunnels'][0].get('public_url')
+                    if public_url:
+                        # Убираем tcp:// из начала
+                        url = public_url.replace('tcp://', '')
+                        logger.info(f"✅ Найден URL через API: {url}")
+                        return url
         except Exception as e:
-            logger.error(f"Ошибка получения Ngrok URL: {e}")
-            return None
+            logger.error(f"❌ Ошибка при запросе к API Ngrok: {e}")
+        
+        logger.error("❌ Ngrok URL не найден в логах")
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения Ngrok URL: {e}")
+        return None
     
     async def setup_vnc_access(self, update, context):
         """Настраивает VNC доступ"""
