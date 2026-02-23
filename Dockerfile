@@ -24,9 +24,9 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка AnyDesk
-RUN wget -qO - https://keys.anydesk.com/repos/DEB-GPG-KEY | apt-key add - \
-    && echo "deb http://deb.anydesk.com/ all main" > /etc/apt/sources.list.d/anydesk-stable.list \
+# Установка AnyDesk (исправлено: без apt-key)
+RUN wget -qO - https://keys.anydesk.com/repos/DEB-GPG-KEY | gpg --dearmor > /etc/apt/trusted.gpg.d/anydesk.gpg \
+    && echo "deb [arch=amd64] http://deb.anydesk.com/ all main" > /etc/apt/sources.list.d/anydesk-stable.list \
     && apt-get update \
     && apt-get install -y anydesk \
     && rm -rf /var/lib/apt/lists/*
@@ -65,16 +65,22 @@ sleep 3\n\
 echo "📌 Шаг 4: Запуск AnyDesk..."\n\
 export DISPLAY=:99\n\
 anydesk --service &\n\
-sleep 5\n\
+sleep 10\n\
 \n\
 echo "📌 Шаг 5: Получение AnyDesk ID..."\n\
-ANYDESK_ID=$(anydesk --get-id)\n\
-echo "🔑 ANYDESK ID: $ANYDESK_ID" > /app/anydesk_id.txt\n\
-echo "✅ AnyDesk ID: $ANYDESK_ID"\n\
+ANYDESK_ID=$(anydesk --get-id | head -1)\n\
+if [ ! -z "$ANYDESK_ID" ]; then\n\
+    echo "🔑 ANYDESK ID: $ANYDESK_ID" > /app/anydesk_id.txt\n\
+    echo "✅ AnyDesk ID: $ANYDESK_ID"\n\
+else\n\
+    echo "❌ Не удалось получить AnyDesk ID"\n\
+fi\n\
 \n\
 echo "=========================================="\n\
 echo "✅ Все сервисы запущены!"\n\
-echo "📱 ANYDESK ID: $ANYDESK_ID"\n\
+if [ ! -z "$ANYDESK_ID" ]; then\n\
+    echo "📱 ANYDESK ID: $ANYDESK_ID"\n\
+fi\n\
 echo "=========================================="\n\
 \n\
 echo "📌 Шаг 6: Запуск бота..."\n\
