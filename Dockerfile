@@ -31,7 +31,7 @@ COPY . .
 
 RUN mkdir -p /app/debug && chmod 777 /app/debug
 
-# Скрипт запуска с принудительным запуском Chrome
+# Скрипт запуска с Chrome в режиме киоска и отключенной защитой
 RUN echo '#!/bin/bash\n\
 echo "=========================================="\n\
 echo "🚀 ЗАПУСК БРАУЗЕРА"\n\
@@ -56,7 +56,10 @@ sleep 3\n\
 websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
 sleep 3\n\
 \n\
-# Принудительный запуск Chrome с отключенной безопасностью\n\
+# Создаем временную директорию для Chrome\n\
+mkdir -p /tmp/chrome-profile\n\
+\n\
+# Запуск Chrome с ПОЛНОСТЬЮ отключенной защитой\n\
 DISPLAY=:99 google-chrome \\\n\
   --no-sandbox \\\n\
   --disable-web-security \\\n\
@@ -65,9 +68,45 @@ DISPLAY=:99 google-chrome \\\n\
   --disable-gpu \\\n\
   --disable-dev-shm-usage \\\n\
   --disable-setuid-sandbox \\\n\
+  --disable-accelerated-2d-canvas \\\n\
+  --disable-accelerated-jpeg-decoding \\\n\
+  --disable-accelerated-mjpeg-decode \\\n\
+  --disable-accelerated-video-decode \\\n\
+  --disable-background-networking \\\n\
+  --disable-background-timer-throttling \\\n\
+  --disable-backgrounding-occluded-windows \\\n\
+  --disable-breakpad \\\n\
+  --disable-client-side-phishing-detection \\\n\
+  --disable-component-extensions-with-background-pages \\\n\
+  --disable-component-update \\\n\
+  --disable-default-apps \\\n\
+  --disable-domain-reliability \\\n\
+  --disable-extensions \\\n\
+  --disable-features=TranslateUI \\\n\
+  --disable-ipc-flooding-protection \\\n\
+  --disable-notifications \\\n\
+  --disable-popup-blocking \\\n\
+  --disable-prompt-on-repost \\\n\
+  --disable-renderer-backgrounding \\\n\
+  --disable-sync \\\n\
+  --disable-translate \\\n\
+  --disable-webgl \\\n\
+  --enable-logging \\\n\
+  --force-color-profile=srgb \\\n\
+  --hide-scrollbars \\\n\
+  --metrics-recording-only \\\n\
+  --mute-audio \\\n\
+  --no-default-browser-check \\\n\
+  --no-first-run \\\n\
+  --no-pings \\\n\
+  --no-zygote \\\n\
+  --password-store=basic \\\n\
+  --use-gl=swiftshader \\\n\
+  --use-mock-keychain \\\n\
+  --user-data-dir=/tmp/chrome-profile \\\n\
   --start-maximized \\\n\
-  --new-window \\\n\
-  https://optifine.net/login &\n\
+  --kiosk \\\n\
+  --app=https://optifine.net/login &\n\
 \n\
 PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)\n\
 echo "=========================================="\n\
