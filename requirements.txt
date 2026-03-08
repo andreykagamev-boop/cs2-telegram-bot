@@ -1,4 +1,4 @@
-aiogram==3.3.0
-cloudscraper==1.2.71
-requests==2.31.0
-beautifulsoup4==4.12.3
+python-telegram-bot==21.9
+requests==2.32.3
+undetected-chromedriver==3.5.5
+selenium==4.27.1
