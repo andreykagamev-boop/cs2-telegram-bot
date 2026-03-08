@@ -3,15 +3,11 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
-    wget \
-    curl \
+    wget curl \
     fonts-liberation \
-    libnss3 \
-    libxss1 \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libgbm1 \
+    libnss3 libxss1 libasound2 \
+    libatk-bridge2.0-0 libgtk-3-0 libgbm1 \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CHROME_BIN=/usr/bin/chromium
@@ -26,4 +22,4 @@ RUN pip install --no-cache-dir undetected-chromedriver==3.5.5 selenium==4.27.1
 
 COPY . .
 
-CMD ["python", "main.py"]
+CMD Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && python main.py
