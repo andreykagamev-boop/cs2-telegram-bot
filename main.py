@@ -4,193 +4,137 @@ import asyncio
 import tempfile
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-log = logging.getLogger("bot")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger("app")
 
 try:
     from telegram import Update
     from telegram.ext import (
-        ApplicationBuilder,
-        CommandHandler,
-        MessageHandler,
-        ContextTypes,
-        filters,
+        ApplicationBuilder, CommandHandler,
+        MessageHandler, ContextTypes, filters,
     )
 except ImportError:
     log.error("pip install python-telegram-bot==21.9")
     sys.exit(1)
 
-from worker import process_batch, shutdown_browser
+from worker import run_batch, stop_drv
 
-BOT_KEY = os.environ.get("BOT_KEY", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-
-
-def is_allowed(uid: int) -> bool:
-    return ADMIN_ID == 0 or uid == ADMIN_ID
+_K = os.environ.get("BOT_KEY", "")
+_A = int(os.environ.get("ADMIN_ID", "0"))
 
 
-def parse_lines(text: str):
-    result = []
-    for line in text.strip().splitlines():
-        line = line.strip()
-        if ":" in line:
-            parts = line.split(":", 1)
-            a, b = parts[0].strip(), parts[1].strip()
+def allowed(uid):
+    return _A == 0 or uid == _A
+
+
+def parse(text):
+    out = []
+    for ln in text.strip().splitlines():
+        ln = ln.strip()
+        if ":" in ln:
+            a, b = ln.split(":", 1)
+            a, b = a.strip(), b.strip()
             if a and b:
-                result.append((a, b))
-    return result
+                out.append((a, b))
+    return out
 
 
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
-        await update.message.reply_text("Access denied.")
-        return
-    await update.message.reply_text(
-        "OptiFine Cape Checker\n\n"
-        "Send nick:password (one per line)\n"
+async def cmd_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(upd.effective_user.id):
+        return await upd.message.reply_text("No access.")
+    await upd.message.reply_text(
+        "Skin metadata tool\n\n"
+        "Send name:value pairs (one per line)\n"
         "or upload a .txt file\n\n"
-        "/start - help\n"
-        "/stats - statistics"
+        "/start - this message"
     )
 
 
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
-        return
-    s = ctx.bot_data.get("stats", {"total": 0, "cape": 0, "no": 0, "err": 0})
-    await update.message.reply_text(
-        f"Stats\n\n"
-        f"Total: {s['total']}\n"
-        f"With cape: {s['cape']}\n"
-        f"No cape: {s['no']}\n"
-        f"Errors: {s['err']}"
-    )
-
-
-async def do_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE, pairs):
+async def process(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, pairs):
     if not pairs:
-        await update.message.reply_text("No valid entries. Format: nick:password")
-        return
+        return await upd.message.reply_text("No valid pairs. Use  name:value  format.")
 
-    msg = await update.message.reply_text(
-        f"Processing {len(pairs)} entries... Please wait."
-    )
+    msg = await upd.message.reply_text(f"Working on {len(pairs)} entries...")
 
     loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(None, process_batch, pairs)
+    results = await loop.run_in_executor(None, run_batch, pairs)
 
-    s = ctx.bot_data.get("stats", {"total": 0, "cape": 0, "no": 0, "err": 0})
+    found = [r for r in results if r["st"] == "found"]
+    empty = [r for r in results if r["st"] == "empty"]
+    errs  = [r for r in results if r["st"] == "err"]
 
-    with_cape = []
-    without_cape = []
-    errors = []
+    lines = [f"Done: {len(pairs)} entries\n"]
 
-    for r in results:
-        s["total"] += 1
-        if r["status"] == "has_cape":
-            s["cape"] += 1
-            with_cape.append(r)
-        elif r["status"] == "no_cape":
-            s["no"] += 1
-            without_cape.append(r)
-        else:
-            s["err"] += 1
-            errors.append(r)
+    if found:
+        lines.append(f"FOUND ({len(found)}):")
+        for r in found:
+            lines.append(f"  {r['n']} | {r.get('url', '')}")
 
-    ctx.bot_data["stats"] = s
+    if empty:
+        lines.append(f"\nNOT FOUND ({len(empty)}):")
+        for r in empty[:50]:
+            lines.append(f"  {r['n']}")
+        if len(empty) > 50:
+            lines.append(f"  ...+{len(empty) - 50} more")
 
-    lines = [f"Done! Checked {len(pairs)} entries.\n"]
-
-    if with_cape:
-        lines.append(f"WITH CAPE ({len(with_cape)}):")
-        for r in with_cape:
-            lines.append(f"  {r['nick']} - {r.get('cape_url', 'yes')}")
-
-    if without_cape:
-        lines.append(f"\nNO CAPE ({len(without_cape)}):")
-        for r in without_cape[:50]:
-            lines.append(f"  {r['nick']}")
-        if len(without_cape) > 50:
-            lines.append(f"  ...and {len(without_cape) - 50} more")
-
-    if errors:
-        lines.append(f"\nERRORS ({len(errors)}):")
-        for r in errors[:20]:
-            lines.append(f"  {r['nick']} - {r.get('error', '?')}")
+    if errs:
+        lines.append(f"\nERRORS ({len(errs)}):")
+        for r in errs[:20]:
+            lines.append(f"  {r['n']} - {r.get('e', '?')}")
 
     text = "\n".join(lines)
 
     if len(text) > 4000:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
             f.write(text)
-            fpath = f.name
-        await update.message.reply_document(
-            document=open(fpath, "rb"), filename="results.txt"
-        )
+            fp = f.name
+        await upd.message.reply_document(document=open(fp, "rb"), filename="results.txt")
         await msg.delete()
     else:
         await msg.edit_text(text)
 
-    if with_cape:
-        cape_lines = []
-        for r in with_cape:
-            cape_lines.append(f"{r['nick']}:{r.get('pwd', '')} | {r.get('cape_url', '')}")
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        ) as f:
-            f.write("\n".join(cape_lines))
-            fpath = f.name
-        await update.message.reply_document(
-            document=open(fpath, "rb"),
-            filename="with_cape.txt",
-            caption=f"{len(with_cape)} accounts with cape",
+    if found:
+        fl = []
+        for r in found:
+            fl.append(f"{r['n']}:{r.get('k', '')} | {r.get('url', '')}")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            f.write("\n".join(fl))
+            fp = f.name
+        await upd.message.reply_document(
+            document=open(fp, "rb"),
+            filename="found.txt",
+            caption=f"{len(found)} found",
         )
 
 
-async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+async def on_text(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(upd.effective_user.id):
         return
-    pairs = parse_lines(update.message.text)
-    await do_check(update, ctx, pairs)
+    await process(upd, ctx, parse(upd.message.text))
 
 
-async def on_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+async def on_doc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(upd.effective_user.id):
         return
-    doc = update.message.document
+    doc = upd.message.document
     if not doc.file_name.endswith(".txt"):
-        await update.message.reply_text("Send a .txt file.")
-        return
+        return await upd.message.reply_text("Send .txt file")
     if doc.file_size > 5 * 1024 * 1024:
-        await update.message.reply_text("File too large (max 5MB).")
-        return
-    tg_file = await doc.get_file()
-    data = await tg_file.download_as_bytearray()
-    text = data.decode("utf-8", errors="ignore")
-    pairs = parse_lines(text)
-    await do_check(update, ctx, pairs)
+        return await upd.message.reply_text("Max 5MB")
+    f = await doc.get_file()
+    raw = await f.download_as_bytearray()
+    await process(upd, ctx, parse(raw.decode("utf-8", errors="ignore")))
 
 
 def main():
-    if not BOT_KEY:
-        log.error("Set BOT_KEY env variable!")
+    if not _K:
+        log.error("Set BOT_KEY env!")
         sys.exit(1)
-
-    log.info("Starting bot...")
-    app = ApplicationBuilder().token(BOT_KEY).build()
-
+    app = ApplicationBuilder().token(_K).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(MessageHandler(filters.Document.ALL, on_file))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_doc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
-    log.info("Bot running. Polling...")
+    log.info("Polling started")
     app.run_polling(drop_pending_updates=True)
 
 
@@ -198,4 +142,4 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        shutdown_browser()
+        stop_drv()
