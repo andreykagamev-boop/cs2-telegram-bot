@@ -1,199 +1,201 @@
 import os
+import sys
 import asyncio
+import tempfile
 import logging
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import BufferedInputFile
-from checker import OptiFineChecker
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger("bot")
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-checker = OptiFineChecker()
+try:
+    from telegram import Update
+    from telegram.ext import (
+        ApplicationBuilder,
+        CommandHandler,
+        MessageHandler,
+        ContextTypes,
+        filters,
+    )
+except ImportError:
+    log.error("pip install python-telegram-bot==21.9")
+    sys.exit(1)
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
+from worker import process_batch, shutdown_browser
+
+BOT_KEY = os.environ.get("BOT_KEY", "")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer(
-        "\U0001f50d <b>OptiFine Checker Bot</b>\n\n"
-        "Отправь .txt файл с аккаунтами:\n"
-        "<code>email:password</code>\n\n"
-        "Или одну строку <code>email:password</code>\n\n"
-        "\u2705 Валидность логина на optifine.net\n"
-        "\U0001f451 Наличие плаща OptiFine\n\n"
-        "/help - Помощь",
-        parse_mode="HTML",
+def is_allowed(uid: int) -> bool:
+    return ADMIN_ID == 0 or uid == ADMIN_ID
+
+
+def parse_lines(text: str):
+    result = []
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if ":" in line:
+            parts = line.split(":", 1)
+            a, b = parts[0].strip(), parts[1].strip()
+            if a and b:
+                result.append((a, b))
+    return result
+
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        await update.message.reply_text("Access denied.")
+        return
+    await update.message.reply_text(
+        "OptiFine Cape Checker\n\n"
+        "Send nick:password (one per line)\n"
+        "or upload a .txt file\n\n"
+        "/start - help\n"
+        "/stats - statistics"
     )
 
 
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    await message.answer(
-        "\U0001f4d6 <b>Помощь</b>\n\n"
-        "<b>Формат:</b>\n"
-        "<code>email@mail.com:password</code>\n\n"
-        "<b>Использование:</b>\n"
-        "1. Отправь .txt файл с аккаунтами\n"
-        "2. Или одну строку email:password\n"
-        "3. Жди результат",
-        parse_mode="HTML",
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+    s = ctx.bot_data.get("stats", {"total": 0, "cape": 0, "no": 0, "err": 0})
+    await update.message.reply_text(
+        f"Stats\n\n"
+        f"Total: {s['total']}\n"
+        f"With cape: {s['cape']}\n"
+        f"No cape: {s['no']}\n"
+        f"Errors: {s['err']}"
     )
 
 
-@dp.message(F.document)
-async def handle_document(message: types.Message):
-    doc = message.document
-    if not doc.file_name.endswith(".txt"):
-        await message.answer("\u274c Отправь .txt файл!")
+async def do_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE, pairs):
+    if not pairs:
+        await update.message.reply_text("No valid entries. Format: nick:password")
         return
 
-    file = await bot.download(doc)
-    content = file.read().decode("utf-8", errors="ignore")
-    lines = [l.strip() for l in content.splitlines() if ":" in l.strip()]
-
-    if not lines:
-        await message.answer("\u274c Файл пустой или неверный формат!")
-        return
-
-    status_msg = await message.answer(
-        f"\U0001f504 Проверяю {len(lines)} аккаунтов...\n\u23f3 Подожди..."
+    msg = await update.message.reply_text(
+        f"Processing {len(pairs)} entries... Please wait."
     )
 
-    valid = []
-    invalid = []
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, process_batch, pairs)
+
+    s = ctx.bot_data.get("stats", {"total": 0, "cape": 0, "no": 0, "err": 0})
+
+    with_cape = []
+    without_cape = []
     errors = []
-    capes = []
 
-    for i, line in enumerate(lines):
-        parts = line.split(":", 1)
-        if len(parts) != 2:
-            continue
-
-        email = parts[0].strip()
-        password = parts[1].strip()
-
-        if i % 3 == 0:
-            try:
-                await status_msg.edit_text(
-                    f"\U0001f504 Проверка: {i+1}/{len(lines)}\n"
-                    f"\u2705 Валид: {len(valid)}\n"
-                    f"\u274c Инвалид: {len(invalid)}\n"
-                    f"\U0001f451 Плащ: {len(capes)}\n"
-                    f"\u26a0\ufe0f Ошибки: {len(errors)}"
-                )
-            except Exception:
-                pass
-
-        result = checker.check_account(email, password)
-
-        if result["status"] == "valid":
-            cape_str = "\U0001f451 ПЛАЩ" if result["cape"] else "Без плаща"
-            entry = f"{email}:{password} | {cape_str}"
-            if result.get("username"):
-                entry += f" | Ник: {result['username']}"
-            valid.append(entry)
-            if result["cape"]:
-                capes.append(f"{email}:{password}")
-        elif result["status"] == "invalid":
-            invalid.append(f"{email}:{password}")
+    for r in results:
+        s["total"] += 1
+        if r["status"] == "has_cape":
+            s["cape"] += 1
+            with_cape.append(r)
+        elif r["status"] == "no_cape":
+            s["no"] += 1
+            without_cape.append(r)
         else:
-            errors.append(f"{email}:{password} | {result.get('detail', '')}")
+            s["err"] += 1
+            errors.append(r)
 
-        await asyncio.sleep(2)
+    ctx.bot_data["stats"] = s
 
-    result_text = (
-        f"\U0001f4ca <b>Результаты</b>\n\n"
-        f"\U0001f4dd Всего: {len(lines)}\n"
-        f"\u2705 Валид: {len(valid)}\n"
-        f"\u274c Инвалид: {len(invalid)}\n"
-        f"\U0001f451 Плащ: {len(capes)}\n"
-        f"\u26a0\ufe0f Ошибки: {len(errors)}"
-    )
-    await status_msg.edit_text(result_text, parse_mode="HTML")
+    lines = [f"Done! Checked {len(pairs)} entries.\n"]
 
-    if valid:
-        data = "\n".join(valid).encode("utf-8")
-        await message.answer_document(
-            BufferedInputFile(data, filename="valid.txt"),
-            caption=f"\u2705 Валидные ({len(valid)})",
-        )
-    if capes:
-        data = "\n".join(capes).encode("utf-8")
-        await message.answer_document(
-            BufferedInputFile(data, filename="capes.txt"),
-            caption=f"\U0001f451 С плащом ({len(capes)})",
-        )
-    if invalid:
-        data = "\n".join(invalid).encode("utf-8")
-        await message.answer_document(
-            BufferedInputFile(data, filename="invalid.txt"),
-            caption=f"\u274c Инвалидные ({len(invalid)})",
-        )
+    if with_cape:
+        lines.append(f"WITH CAPE ({len(with_cape)}):")
+        for r in with_cape:
+            lines.append(f"  {r['nick']} - {r.get('cape_url', 'yes')}")
+
+    if without_cape:
+        lines.append(f"\nNO CAPE ({len(without_cape)}):")
+        for r in without_cape[:50]:
+            lines.append(f"  {r['nick']}")
+        if len(without_cape) > 50:
+            lines.append(f"  ...and {len(without_cape) - 50} more")
+
     if errors:
-        data = "\n".join(errors).encode("utf-8")
-        await message.answer_document(
-            BufferedInputFile(data, filename="errors.txt"),
-            caption=f"\u26a0\ufe0f Ошибки ({len(errors)})",
+        lines.append(f"\nERRORS ({len(errors)}):")
+        for r in errors[:20]:
+            lines.append(f"  {r['nick']} - {r.get('error', '?')}")
+
+    text = "\n".join(lines)
+
+    if len(text) > 4000:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(text)
+            fpath = f.name
+        await update.message.reply_document(
+            document=open(fpath, "rb"), filename="results.txt"
         )
-
-
-@dp.message(F.text)
-async def handle_text(message: types.Message):
-    text = message.text.strip()
-    if text.startswith("/"):
-        return
-    if ":" not in text:
-        await message.answer(
-            "\u274c Формат: <code>email:password</code>", parse_mode="HTML"
-        )
-        return
-
-    parts = text.split(":", 1)
-    email = parts[0].strip()
-    password = parts[1].strip()
-
-    msg = await message.answer(
-        f"\U0001f504 Проверяю <code>{email}</code>...", parse_mode="HTML"
-    )
-
-    result = checker.check_account(email, password)
-
-    if result["status"] == "valid":
-        cape = "\U0001f451 Плащ: ДА" if result["cape"] else "\u274c Плащ: НЕТ"
-        reply = (
-            f"\u2705 <b>ВАЛИД!</b>\n\n"
-            f"\U0001f4e7 {email}\n"
-            f"\U0001f511 <tg-spoiler>{password}</tg-spoiler>\n"
-            f"{cape}"
-        )
-        if result.get("username"):
-            reply += f"\n\U0001f464 Ник: {result['username']}"
-        if result.get("details"):
-            reply += f"\n\U0001f4cb {result['details']}"
-    elif result["status"] == "invalid":
-        reply = (
-            f"\u274c <b>ИНВАЛИД</b>\n\n"
-            f"\U0001f4e7 {email}\n"
-            f"\U0001f4ac {result.get('detail', 'Неверный логин/пароль')}"
-        )
+        await msg.delete()
     else:
-        reply = (
-            f"\u26a0\ufe0f <b>ОШИБКА</b>\n\n"
-            f"\U0001f4e7 {email}\n"
-            f"\U0001f4ac {result.get('detail', 'Неизвестная ошибка')}"
+        await msg.edit_text(text)
+
+    if with_cape:
+        cape_lines = []
+        for r in with_cape:
+            cape_lines.append(f"{r['nick']}:{r.get('pwd', '')} | {r.get('cape_url', '')}")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write("\n".join(cape_lines))
+            fpath = f.name
+        await update.message.reply_document(
+            document=open(fpath, "rb"),
+            filename="with_cape.txt",
+            caption=f"{len(with_cape)} accounts with cape",
         )
 
-    await msg.edit_text(reply, parse_mode="HTML")
+
+async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+    pairs = parse_lines(update.message.text)
+    await do_check(update, ctx, pairs)
 
 
-async def main():
-    log.info("Bot started!")
-    await dp.start_polling(bot)
+async def on_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+    doc = update.message.document
+    if not doc.file_name.endswith(".txt"):
+        await update.message.reply_text("Send a .txt file.")
+        return
+    if doc.file_size > 5 * 1024 * 1024:
+        await update.message.reply_text("File too large (max 5MB).")
+        return
+    tg_file = await doc.get_file()
+    data = await tg_file.download_as_bytearray()
+    text = data.decode("utf-8", errors="ignore")
+    pairs = parse_lines(text)
+    await do_check(update, ctx, pairs)
+
+
+def main():
+    if not BOT_KEY:
+        log.error("Set BOT_KEY env variable!")
+        sys.exit(1)
+
+    log.info("Starting bot...")
+    app = ApplicationBuilder().token(BOT_KEY).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+
+    log.info("Bot running. Polling...")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        main()
+    finally:
+        shutdown_browser()
